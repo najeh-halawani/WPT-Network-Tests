@@ -1,0 +1,16 @@
+{
+  "browser_host": "web-platform.test",
+  "ports": {
+    "http": [8000, 8010],
+    "http-local": [8001],
+    "http-public": [8002],
+    "https": [8443, 8444],
+    "https-local": [8445],
+    "https-public": [8446],
+    "ws": [8888],
+    "wss": [8889],
+    "webtransport-h3": ["auto"],
+    "dns": [8053],
+    "h2": [9000]
+  }
+}

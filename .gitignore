@@ -1,0 +1,5 @@
+# Generated runnable WPT tree: rebuild with `python -m netcensus subtree data/census.json`
+/wpt-network/
+__pycache__/
+# validation scratch runs
+/data/validate-*
