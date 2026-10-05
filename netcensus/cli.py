@@ -167,11 +167,19 @@ def _interrupt_on(*signames: str) -> None:
 
     for name in signames:
         sig = getattr(signal, name, None)
-        if sig is not None:
-            try:
-                signal.signal(sig, handler)
-            except (ValueError, OSError):
-                pass
+        if sig is None:
+            continue
+        # An inherited "ignore" is a decision made by whoever started us:
+        # `nohup` and `screen`-like launchers ignore SIGHUP precisely so the
+        # run SURVIVES a dropped session.  Replacing it with a handler would
+        # turn their "keep running" into "stop" -- measured: a nohup'd run on
+        # the Mac mini stopped at 97/115 when the ssh session closed.
+        if signal.getsignal(sig) == signal.SIG_IGN:
+            continue
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
