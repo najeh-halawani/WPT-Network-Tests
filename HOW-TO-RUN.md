@@ -167,6 +167,7 @@ the WebSocket server saw was credited to a test.
 | `-j / --jobs` | 8 | parallel browsers; changes speed, not attribution |
 | `--types` | testharness, reftest, print-reftest, crashtest | manifest types to run |
 | `--filter` | everything | path prefix(es), comma-separated |
+| `--serial-recheck` | `webrtc` | after the parallel pass, re-run **serially** the tests under these prefixes that showed no runtime evidence; the serial verdict replaces the parallel one. WebRTC is timing-bound: under parallel load ICE may not connect before the test ends (measured: 3 of 205 emitters lost at `-j 8`, all 3 recovered serially). `""` disables |
 
 ## 3. Build the runnable tree of emitting tests
 
@@ -178,9 +179,22 @@ python -m netcensus tree data/census.json --out TREE.md                   # rege
 
 `wpt-network/` is a real WPT checkout that contains only the selected tests,
 at their original paths. It also includes everything they need: the `wpt`
-CLI, `tools/`, `resources/`, `common/`, `interfaces/`, shared media, and every
-support file of the directories involved. It has its own fresh
-`MANIFEST.json` and a `NETWORK-TESTS.txt` list.
+CLI (including every directory listed in `tools/wpt/paths`), `tools/`,
+`resources/`, `common/`, `interfaces/`, shared media, and every support file
+of the directories involved. It has its own fresh `MANIFEST.json` and a
+`NETWORK-TESTS.txt` list. A source file is kept whole, so its sibling global
+variants come along too (205 selected URLs became a 214-URL tree).
+
+To check that the tree is complete, run the census inside it and compare. A
+missing support file wouldn't error; it would make a test emit less:
+
+```sh
+python -m netcensus census --wpt wpt-network -j 8 --out data/in-tree.json
+```
+
+Validated on the 205 WebRTC/WebTransport runtime emitters: all 205 are
+present and all 205 emit inside the pruned tree (3 needed the serial
+re-check, see `--serial-recheck`).
 
 ## 4. `wpt serve`: browse the tests by hand
 

@@ -56,3 +56,6 @@ class RunConfig:
     filter: str = ""
     limit: int = 0
     require_all_servers: bool = True   # refuse to run with a protocol server down
+    # After the parallel pass, re-run serially the tests under these prefixes
+    # that showed no runtime evidence (WebRTC is timing-bound under load).
+    serial_recheck: str = "webrtc"

@@ -128,7 +128,8 @@ class Census:
             router = accesslog.LogRouter(log_path)
             router.start()
             try:
-                self._drive(todo, router, session)
+                negatives = self._drive(todo, router, session)
+                self._serial_recheck(negatives, router, session)
             finally:
                 router.orphans(flush_pending=True)
                 router.stop()
@@ -151,14 +152,40 @@ class Census:
             groups.setdefault(accesslog.OwnDocs(t.url).group, []).append(t)
         return list(groups.values())
 
+    def _serial_recheck(self, negatives: list, router: accesslog.LogRouter,
+                        session: dict) -> None:
+        """Re-run, ONE AT A TIME, the tests under `serial_recheck` prefixes
+        that came back without runtime evidence.
+
+        WebRTC is timing-bound: under parallel load ICE may not connect before
+        the test finishes, and the test scores as if it never touched the
+        network.  Measured: 3 of 205 WebRTC/WebTransport emitters lost that way
+        at -j 8, and all 3 emitted when re-run serially.  The serial row is
+        appended after the parallel one, and the last row for a URL wins.
+        """
+        prefixes = tuple(p.strip().strip("/")
+                         for p in self.cfg.serial_recheck.split(",") if p.strip())
+        again = [t for t in negatives
+                 if prefixes and t.url.lstrip("/").startswith(prefixes)]
+        if not again:
+            return
+        self.console.header(f"serial re-check: {len(again)} test(s) under "
+                            f"{', '.join(prefixes)} without runtime evidence, -j 1")
+        self._drive(again, router, session, jobs=1)
+
     def _drive(self, todo: list, router: accesslog.LogRouter,
-               session: dict) -> None:
+               session: dict, jobs: int | None = None) -> list:
+        """Run `todo`; return the tests that came back WITHOUT runtime
+        evidence (the candidates for a serial re-check)."""
         work = collections.deque(self._groups(todo))
         lock = threading.Lock()
         sink = open(self.checkpoint, "a", encoding="utf-8", newline="\n")
         total = len(todo)
         t0 = time.time()
         tally = {"runtime": 0, "static": 0, "error": 0}
+        by_url = {t.url: t for t in todo}
+        negatives: list = []
+        done = [0]
 
         def next_group():
             with lock:
@@ -170,7 +197,10 @@ class Census:
                 sink.flush()
                 session["rows"] += 1
                 session["ws_attributed"] += result.n_ws
-                idx = session["rows"]
+                done[0] += 1
+                idx = done[0]
+                if not result.runtime:
+                    negatives.append(by_url[result.url])
                 if result.tier in tally:
                     tally[result.tier] += 1
                 snap = dict(tally)
@@ -197,7 +227,7 @@ class Census:
                     browser.close()
 
         threads = [threading.Thread(target=worker, args=(i,), daemon=True)
-                   for i in range(max(1, self.cfg.jobs))]
+                   for i in range(max(1, jobs or self.cfg.jobs))]
         try:
             for t in threads:
                 t.start()
@@ -211,8 +241,10 @@ class Census:
                 work.clear()
             for t in threads:
                 t.join(timeout=self.cfg.timeout + self.cfg.settle + 5)
+            negatives = []            # an interrupted run is not re-checked
         finally:
             sink.close()
+        return negatives
 
     def _one(self, browser: Browser, test: manifest.Test,
              router: accesslog.LogRouter) -> TestResult:

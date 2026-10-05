@@ -31,7 +31,8 @@ def _cfg(a) -> RunConfig:
                      settle=a.settle, types=tuple(a.types.split(",")),
                      filter=getattr(a, "filter", ""),
                      limit=getattr(a, "limit", 0),
-                     require_all_servers=not getattr(a, "allow_missing_servers", False))
+                     require_all_servers=not getattr(a, "allow_missing_servers", False),
+                     serial_recheck=getattr(a, "serial_recheck", RunConfig().serial_recheck))
 
 
 def _check_chrome(cfg: RunConfig, c: Console) -> bool:
@@ -69,15 +70,17 @@ def cmd_verify(a, c: Console) -> int:
 
 def cmd_subtree(a, c: Console) -> int:
     from . import subtree
-    subtree.build(os.path.abspath(a.wpt), a.census, os.path.abspath(a.out), c,
-                  force=a.force, manifest=not a.no_manifest,
-                  include_static=a.include_static)
-    return 0
+    stats = subtree.build(os.path.abspath(a.wpt), a.census, os.path.abspath(a.out),
+                          c, force=a.force, manifest=not a.no_manifest,
+                          include_static=a.include_static)
+    # a tree without a MANIFEST.json cannot be run: that is a failure
+    return 0 if stats.get("manifest", True) else 1
 
 
 def cmd_tree(a, c: Console) -> int:
     from . import tree
-    text = tree.render(a.census, a.manifest, depth=2)
+    text = tree.render(a.census, a.manifest, depth=2,
+                       wpt=None if a.no_overview else os.path.abspath(a.wpt))
     if a.out:
         with open(a.out, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
@@ -112,6 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", default=os.path.join(DATA_DIR, "census.json"))
     p.add_argument("--resume", action="store_true",
                    help="skip tests already in the .jsonl checkpoint")
+    p.add_argument("--serial-recheck", default=RunConfig().serial_recheck,
+                   metavar="PREFIXES",
+                   help="after the parallel pass, re-run serially the tests under "
+                        "these comma-separated prefixes that showed no runtime "
+                        "evidence (default: webrtc; \"\" disables)")
     p.set_defaults(fn=cmd_census)
 
     p = sub.add_parser("verify", help="run test(s) serially, show the access-log evidence")
@@ -134,7 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_subtree)
 
     p = sub.add_parser("tree", help="render TREE.md from a census")
-    p.add_argument("census", help="census JSON")
+    p.add_argument("census", nargs="+",
+                   help="census JSON(s); several are merged, last row per URL wins")
+    p.add_argument("--wpt", default=RunConfig().wpt,
+                   help="WPT checkout for the full-tree manifest overview")
+    p.add_argument("--no-overview", action="store_true",
+                   help="omit the full-tree manifest overview")
     p.add_argument("--manifest", default=os.path.join(KIT, "wpt-network",
                                                       "MANIFEST.json"))
     p.add_argument("--out", help="write here instead of stdout")

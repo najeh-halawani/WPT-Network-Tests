@@ -421,6 +421,52 @@ class TestPreflight(unittest.TestCase):
         self.assertFalse(server._udp_held(port))
 
 
+class TestSubtree(unittest.TestCase):
+    def test_keeps_emitters_support_and_infra_drops_the_rest(self):
+        from netcensus import subtree
+        wpt = tempfile.mkdtemp()
+        files = {
+            "wpt": "", "tools/wpt/paths": "docs/\ntools/wpt/\n",
+            "tools/wpt/commands.json": "{}", "docs/commands.json": "{}",
+            "resources/testharness.js": "", "common/utils.js": "",
+            "fetch/a.any.js": "", "fetch/b.html": "", "fetch/resources/x.py": "",
+            "dom/c.html": "",
+        }
+        for rel, body in files.items():
+            os.makedirs(os.path.join(wpt, os.path.dirname(rel)) or wpt, exist_ok=True)
+            with open(os.path.join(wpt, rel), "w") as fh:
+                fh.write(body)
+        man = {"items": {"testharness": {
+            "fetch": {"a.any.js": ["h", ["fetch/a.any.html", {}],
+                                   ["fetch/a.any.worker.html", {}]],
+                      "b.html": ["h", [None, {}]]},
+            "dom": {"c.html": ["h", [None, {}]]}},
+            "support": {"fetch": {"resources": {"x.py": ["h", [None, {}]]}}}}}
+        with open(os.path.join(wpt, "MANIFEST.json"), "w") as fh:
+            json.dump(man, fh)
+        census = os.path.join(wpt, "c.json")
+        with open(census, "w") as fh:
+            json.dump({"rows": [
+                {"url": "/fetch/a.any.worker.html", "emitted": True, "runtime": True,
+                 "logged": ["GET :8000/fetch/resources/x.py"]},
+                {"url": "/fetch/b.html", "emitted": False, "runtime": False},
+                {"url": "/dom/c.html", "emitted": True, "runtime": False}]}, fh)
+        out = os.path.join(tempfile.mkdtemp(), "tree")
+        stats = subtree.build(wpt, census, out, Console(color=False, stream=io.StringIO()),
+                              manifest=False)
+        has = lambda rel: os.path.exists(os.path.join(out, rel))
+        self.assertTrue(has("fetch/a.any.js"))          # source of the emitter
+        self.assertTrue(has("fetch/resources/x.py"))    # its support file
+        self.assertFalse(has("fetch/b.html"))           # did not emit
+        self.assertFalse(has("dom/c.html"))             # static only (default)
+        for infra in ("wpt", "docs/commands.json", "tools/wpt/paths",
+                      "resources/testharness.js", "common/utils.js"):
+            self.assertTrue(has(infra), infra)
+        self.assertEqual(open(os.path.join(out, "NETWORK-TESTS.txt")).read().split(),
+                         ["/fetch/a.any.worker.html"])
+        self.assertEqual(stats["test_sources"], 1)
+
+
 class TestFinalize(unittest.TestCase):
     """The end-of-run path: it runs once, hours in, so it is tested here."""
 

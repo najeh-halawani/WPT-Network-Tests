@@ -58,6 +58,21 @@ def _test_sources(man: dict) -> set:
     return out
 
 
+def _cli_dirs(wpt: str) -> set:
+    """Top-level directories the `wpt` CLI needs just to START.
+
+    tools/wpt/wpt.py loads a commands.json from every directory listed in
+    tools/wpt/paths -- `docs/` among them -- and dies with FileNotFoundError
+    if one is missing, before any command runs.  Read from the checkout, so a
+    WPT revision that adds a path is followed automatically.
+    """
+    try:
+        with open(os.path.join(wpt, "tools", "wpt", "paths"), encoding="utf-8") as fh:
+            return {ln.strip().strip("/").split("/", 1)[0] for ln in fh if ln.strip()}
+    except OSError:
+        return {"tools", "docs"}
+
+
 def _logged_top_dirs(rows: list) -> set:
     dirs = set()
     for r in rows:
@@ -93,7 +108,8 @@ def build(wpt: str, census_json: str, out: str, console: Console,
     top_dirs = {s.split("/", 1)[0] for s in keep_sources}
     top_dirs |= {d for d in _logged_top_dirs(rows)
                  if os.path.isdir(os.path.join(wpt, d))}
-    top_dirs |= {d for d in INFRA_DIRS if os.path.isdir(os.path.join(wpt, d))}
+    infra_dirs = set(INFRA_DIRS) | _cli_dirs(wpt)
+    top_dirs |= {d for d in infra_dirs if os.path.isdir(os.path.join(wpt, d))}
 
     if os.path.exists(out):
         if not force:
@@ -112,7 +128,7 @@ def build(wpt: str, census_json: str, out: str, console: Console,
     # 2. infra + selected directories
     copied_tests = copied_support = 0
     for top in sorted(top_dirs):
-        infra = top in INFRA_DIRS
+        infra = top in infra_dirs
         for root, dirs, files in os.walk(os.path.join(wpt, top)):
             dirs[:] = [d for d in dirs if d not in SKIP_NAMES]
             rel_root = os.path.relpath(root, wpt).replace(os.sep, "/")
