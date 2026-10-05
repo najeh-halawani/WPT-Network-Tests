@@ -11,7 +11,9 @@ lines are filtered out before they reach any log.
 from __future__ import annotations
 
 import ast
+import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -131,11 +133,13 @@ class WptServe:
         navigation lands on the browser's error page, and every test reads as
         "no network" -- silently.  So the ports are checked, not hoped for.
 
-        Only a leftover of THIS kit is killed: a process whose command line
+        Only a leftover of THIS kit is killed: the server recorded in
+        LEFTOVER_FILE by our previous run, or a process whose command line
         names our own serve config.  A port held by anything else (another
         harness, a dev server) is reported with its PID and the run refused --
         killing an unknown process to make room is not this tool's call.
         """
+        _reap_previous_server()
         if not held_ports():
             return
         proc.kill_matching(f"serve --config {SERVE_CONFIG}")
@@ -168,6 +172,7 @@ class WptServe:
             argv, cwd=self.wpt, stdout=open(self.log_path, "w"),
             stderr=subprocess.STDOUT, **proc.child_kwargs(new_group=True))
         proc.bind_to_parent(self.proc)
+        _remember_server(self.proc.pid)
         deadline = time.time() + wait
         while time.time() < deadline:
             if self.proc.poll() is not None:
@@ -210,3 +215,73 @@ class WptServe:
         # inside the tree taskkill walks.  Their command line carries
         # `parent_pid=<our server>`, which names them and nothing else.
         proc.kill_matching(f"parent_pid={pid}")
+        _forget_server()
+
+
+# ------------------------------------------- leftovers of OUR previous run ---
+# When the census is killed before its cleanup runs (a dropped ssh session, a
+# closed terminal, kill -9), wpt serve's workers survive, reparent to init and
+# keep every port.  Windows prevents that with a job object; macOS has no
+# equivalent.  Measured on the Mac mini: 13 orphaned workers holding all of
+# 8000-9000, and the next run refused to start.  So the server is RECORDED:
+#
+#   POSIX    its process-group id.  It was started as a session leader, so
+#            the group is its own, and orphaned workers KEEP that group id
+#            after their parent dies -- the group names them exactly.
+#   Windows  its pid; spawned workers carry `parent_pid=<pid>`.
+LEFTOVER_FILE = proc.tmpdir("netcensus_wptserve.group")
+
+
+def _remember_server(pid: int) -> None:
+    try:
+        with open(LEFTOVER_FILE, "w") as fh:
+            fh.write(f"{pid}\n")
+    except OSError:
+        pass
+
+
+def _forget_server() -> None:
+    try:
+        os.remove(LEFTOVER_FILE)
+    except OSError:
+        pass
+
+
+def _group_members(pgid: int) -> list[tuple[int, str]]:
+    """(pid, command) of every live process in a POSIX process group."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,command="],
+                             capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return []
+    members = []
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[1] == str(pgid):
+            members.append((int(parts[0]), parts[2]))
+    return members
+
+
+def _reap_previous_server() -> None:
+    """Stop the server our own previous run left behind, and nothing else."""
+    try:
+        with open(LEFTOVER_FILE) as fh:
+            old = int(fh.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return
+    if proc.WINDOWS:
+        proc.kill_matching(f"parent_pid={old}")
+    else:
+        members = _group_members(old)
+        # A group id can be reused once its group is gone.  Kill only if every
+        # member is still recognisably wpt serve (its python, or a
+        # multiprocessing worker of it); otherwise leave it alone.
+        ours = members and all(("wpt" in cmd or "multiprocessing" in cmd)
+                               for _, cmd in members)
+        if ours:
+            try:
+                os.killpg(old, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            time.sleep(1)
+    _forget_server()

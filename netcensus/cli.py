@@ -155,8 +155,28 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _interrupt_on(*signames: str) -> None:
+    """Treat these signals like Ctrl-C, so the normal cleanup runs: wpt serve
+    and every Chrome are stopped, finished rows are kept, --resume continues.
+    SIGHUP is what a dropped ssh session sends; without this the process dies
+    on the spot and its servers are orphaned holding the ports."""
+    import signal
+
+    def handler(signum, frame):
+        raise KeyboardInterrupt
+
+    for name in signames:
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
     proc.utf8_stdio()
+    _interrupt_on("SIGHUP", "SIGTERM")
     a = build_parser().parse_args(argv)
     c = Console(color=False if a.no_color else None, quiet=a.quiet)
     from .server import ServeError

@@ -105,6 +105,24 @@ wc -l data/census.jsonl
 Add `-q` (`python -m netcensus -q census …`) to print only the emitting tests
 plus the progress lines.
 
+**On macOS / Linux** (e.g. the Mac mini), `run-full.sh` does all of the
+above in one command: it sources `../env.sh` if present, uses the pinned
+Chrome, appends to `data/census.log`, and **resumes automatically** when
+`data/census.jsonl` already has rows. Run it inside `screen`, so a dropped
+ssh session doesn't stop the run:
+
+```sh
+screen -S census                 # detach: Ctrl-A then D;  re-attach: screen -r census
+cd ~/lna-v2/network-tests && ./run-full.sh
+tail -f data/census.log          # from any other terminal
+```
+
+The code is the same on every platform; only `WPT_ROOT` / `WPT_CHROME` differ.
+One difference to know: macOS has no way to make child processes die with
+their parent. A **hard-killed** run (not Ctrl-C) can leave Chrome or
+`wpt serve` holding the ports, and the next run will then refuse to start and
+name the PID.
+
 **Smaller runs** for a protocol or a directory (minutes, not hours):
 
 ```sh
