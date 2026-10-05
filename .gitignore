@@ -3,3 +3,6 @@
 __pycache__/
 # validation scratch runs
 /data/validate-*
+# census working files: checkpoint, session ledger, console log
+/data/*.jsonl
+/data/*.log
