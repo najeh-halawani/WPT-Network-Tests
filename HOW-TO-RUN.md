@@ -1,174 +1,244 @@
 # How to run
 
-All commands are run from `network-tests/` unless they say otherwise. Shell
-examples are given for PowerShell (Windows) and bash (Linux/macOS).
+Run every command from `network-tests/` unless it says otherwise. On **Git
+Bash**, write test paths without a leading `/` (`xhr/send-redirect.htm`, not
+`/xhr/send-redirect.htm`). Git Bash rewrites a leading `/` into a Windows
+path.
 
 ## 0. One-time setup
 
 ```sh
-pip install -r requirements.txt          # websockets
+pip install -r requirements.txt     # websockets + aioquic (the WebTransport server)
+python -m unittest discover -s tests # 54 unit tests, no browser needed
 ```
 
-WPT serves everything from `web-platform.test` and its subdomains, so those
-names must resolve to `127.0.0.1`. The census does this inside Chrome (with
-`--host-resolver-rules`). For `wpt serve` in your own browser, or for
-`wpt run`, add them to the system hosts file once:
+WPT serves everything from `web-platform.test` and its subdomains. The
+census resolves those inside Chrome, so it needs no hosts file. For `wpt serve`
+in your own browser, or for `wpt run`, add them to the system hosts file once:
 
 ```powershell
-# Windows, in an *Administrator* PowerShell, from the WPT checkout
+# Windows, *Administrator* PowerShell, inside the WPT checkout
 python wpt make-hosts-file | Out-File $env:SystemRoot\System32\drivers\etc\hosts -Encoding ascii -Append
 ```
 ```sh
-# Linux / macOS
-./wpt make-hosts-file | sudo tee -a /etc/hosts
+./wpt make-hosts-file | sudo tee -a /etc/hosts      # Linux / macOS
 ```
 
-## 1. Build the runnable tree of emitting tests
-
-```sh
-python -m netcensus subtree data/census.json --out wpt-network
-```
-
-This produces `wpt-network/`: a real WPT checkout that contains **only** the
-emitting tests, at their original paths. It also includes everything they
-need: the `wpt` CLI, `tools/`, `resources/`, `common/`, `interfaces/`, shared
-media, and every support file in each directory involved, plus its own fresh
-`MANIFEST.json` and `NETWORK-TESTS.txt`. Tests that do not emit are left out.
-It takes a few minutes, mostly for `wpt manifest`.
-
-## 2. `wpt serve`: browse the tests by hand
-
-```sh
-cd wpt-network
-python wpt serve                 # add --verbose to see the access log live
-```
-
-Open <http://web-platform.test:8000/>, for example
-<http://web-platform.test:8000/xhr/send-redirect.htm>. HTTPS tests
-(`*.https.*`) are on <https://web-platform.test:8443/>. Stop the server with
-Ctrl-C.
-
-With `--verbose`, wptserve prints one line per request:
-
-```
-[… http on port 8000] DEBUG - GET /xhr/resources/content.py
-[… http on port 8000] DEBUG - 200 GET /xhr/resources/content.py (b'http://web-platform.test:8000/xhr/send-redirect.htm') 57
-                              ↑status  ↑path the browser asked for   ↑Referer = the page that asked
-```
-
-These are the lines the census reads.
-
-## 3. `wpt run`: run the tests with WPT's own runner
-
-```sh
-cd wpt-network
-# every emitting test, headless, chromedriver fetched to match the binary
-python wpt run chrome --binary ../../../browsers/chrome-win64/chrome.exe \
-    --install-webdriver --yes --headless \
-    --include-file NETWORK-TESTS.txt \
-    --log-wptreport ../data/wptreport.json --log-mach -
-
-# one directory or one file
-python wpt run chrome --binary … --install-webdriver --yes --headless fetch/api/basic
-python wpt run chrome --binary … --install-webdriver --yes --headless xhr/send-redirect.htm
-```
-
-| flag | meaning |
-|---|---|
-| `chrome` / `firefox` / `chromium` | product; `--binary` points at the browser |
-| `--install-webdriver` | download a chromedriver/geckodriver matching `--binary` (or pass `--webdriver-binary`) |
-| `--include-file F` | run exactly the test URLs listed in `F` (one per line) |
-| `--processes N` | parallel browser instances |
-| `--log-wptreport F` | machine-readable results (pass/fail per subtest) |
-| `--no-manifest-update` | skip re-checking `MANIFEST.json` (faster when nothing changed) |
-
-`wpt run` reports pass/fail. It **does not** show the access log: wptrunner
-pins the server's logger to INFO, which drops the per-request lines. Use
-step 4 for the network evidence.
-
-## 4. Check that a test emits: `verify`
+## 1. Check a few tests: `verify` (start here)
 
 ```sh
 python -m netcensus verify xhr/send-redirect.htm
-python -m netcensus verify fetch/api/basic/request-head.any.js     # all variants of a source
-python -m netcensus verify fetch/api/basic/                       # a whole directory
-python -m netcensus verify --hide-noise xhr/send-redirect.htm     # only the test's own lines
+python -m netcensus verify webtransport/datagram-bad-chunk.https.any.js   # all 4 globals
+python -m netcensus verify webrtc/RTCDataChannel-send.html
+python -m netcensus verify websockets/                                   # a whole directory
+python -m netcensus verify --hide-noise fetch/api/basic/                 # only the test's own lines
 ```
 
-`verify` runs serially, so every logged line belongs to the test being run,
-and prints the evidence in color:
+`verify` runs tests **one at a time**. Every line the servers logged during a
+test therefore belongs to that test, and is printed in color:
 
 ```
-[1/1] ▶ testing  /xhr/send-redirect.htm
-    ✔ network emits  46 request(s)
-        noise  200  GET  :8000/xhr/send-redirect.htm            ← the test page (grey)
-        noise  200  GET  :8000/resources/testharness.js         ← harness (grey)
-        own    200  POST :8000/xhr/resources/content.py         ← counted (green)
-        own    301  GET  :8000/xhr/resources/redirect.py?…       ← counted (green)
-        other  …                                                ← no attributable Referer (yellow)
+• servers  ✔ http  ✔ https  ✔ websocket  ✔ websocket-tls  ✔ h2  ✔ webtransport
+[1/1] ▶ testing  /webtransport/datagram-bad-chunk.https.any.html
+    ✔ network emits [webtransport]  1 runtime request(s) + 2 static
+        runtime  ok   WT  :58982/webtransport/handlers/echo.py  (session established with the h3 server)
+        static   200  GET :8443/common/utils.js                  ← markup / META dependency (cyan)
+        noise    200  GET :8443/resources/testharness.js         ← harness (grey, hidden by --hide-noise)
+        other    …                                               ← logged with no attributable Referer (yellow)
 ```
 
 | result line | meaning |
 |---|---|
-| `✔ network emits` (green) | the access log has at least one request of the test's own |
+| `✔ network emits [http] [websocket] …` (green) | runtime evidence; the tags name the protocols |
+| `◦ static subresources only` (cyan) | only markup subresources / META dependencies reached the server |
 | `· no network` (grey) | only the page and the harness were logged |
-| `⚠ attempted, never reached server` (yellow) | the browser tried (CDP saw it), and the server never logged it |
-| `✖ error` (red) | the browser or the CDP session failed for this test |
-| `[harness did not report]` (magenta) | testharness never completed within `--timeout` |
+| `⚠ attempted, never reached server` (yellow) | the browser tried, and no server logged or answered it |
+| `✖ error` (red) | the browser or CDP failed for this test |
+| `[harness did not report]` (magenta) | testharness did not finish within `--timeout` |
+| `⚠ ws server logged N handshake(s), M credited` | a WebSocket the census did not see (verify only) |
 
-## 5. Re-run the census (regenerate the list)
+## 2. Large runs: the census
 
+A census runs many tests in parallel and records a verdict per test. The
+whole tree is **67,515 tests, roughly 4–5 hours at `-j 12`** on a 24-core
+machine with about 6 GB free RAM. Use `-j 8` on smaller machines. Run it
+yourself in a terminal you can leave open:
+
+```powershell
+# PowerShell (Windows). Progress shows on screen AND goes to data\census.log
+cd D:\Radboud\WeSPO\Projects\LocalMessV2\wpt-lna-extractor\network-tests
+python -m netcensus census -j 12 --out data\census.json 2>&1 | Tee-Object -FilePath data\census.log
+```
 ```sh
-python -m netcensus census -j 8                         # whole tree → data/census.{json,jsonl,txt}
-python -m netcensus census -j 8 --resume                # continue after a crash or Ctrl-C
-python -m netcensus census --filter fetch/ -j 8 --out data/fetch.json
-python -m netcensus -q census -j 8                      # print only the emitting tests
-python -m netcensus list --filter webrtc/               # just enumerate, no browser
+# bash / Git Bash / Linux
+python -m netcensus census -j 12 --out data/census.json 2>&1 | tee data/census.log
 ```
 
-Every test prints two lines: `▶ testing <url>`, then its network verdict.
-Results are appended to `data/census.jsonl` as each test finishes, so
-`--resume` loses nothing. On exit, `census.json` (full rows + summary) and
-`census.txt` (emitting URLs) are rebuilt from that file.
+**If it stops** (closed terminal, reboot, Ctrl-C), run the same command with
+`--resume`. Every finished test is already saved in `data/census.jsonl`, so
+nothing is lost:
 
-Then rebuild the tree and the docs:
+```powershell
+python -m netcensus census -j 12 --out data\census.json --resume 2>&1 | Tee-Object -FilePath data\census.log -Append
+```
+
+**Watching progress.** Every test prints two lines (`▶ testing <url>`, then
+its verdict). Every 250 tests a summary line follows:
+
+```
+── progress 2500/67515 (3.7%)  250 tests/min  elapsed 0.2h  eta 4.3h (~19:05)  runtime=900 static=700 errors=1 ──
+```
+
+From a second terminal:
+
+```powershell
+Get-Content data\census.log -Wait -Tail 20                       # live tail
+Select-String "── progress" data\census.log | Select-Object -Last 1 # latest progress line only
+(Get-Content data\census.jsonl | Measure-Object -Line).Lines      # tests decided so far
+```
+```sh
+tail -f data/census.log
+grep "── progress" data/census.log | tail -1
+wc -l data/census.jsonl
+```
+
+Add `-q` (`python -m netcensus -q census …`) to print only the emitting tests
+plus the progress lines.
+
+**Smaller runs** for a protocol or a directory (minutes, not hours):
 
 ```sh
-python -m netcensus subtree data/census.json --out wpt-network --force
-python -m netcensus tree data/census.json --out TREE.md
+python -m netcensus census --filter "webrtc/,webtransport/" -j 8 --out data/rtc-wt.json
+python -m netcensus census --filter websockets/ -j 8 --out data/websockets.json
+python -m netcensus census --filter fetch/ -j 12 --out data/fetch.json
+python -m netcensus list --filter webrtc/          # just enumerate, no browser
 ```
+
+### What a census writes
+
+| file | contents |
+|---|---|
+| `data/census.txt` | **tests with runtime evidence**, the headline list (one URL per line) |
+| `data/census-http.txt`, `-websocket.txt`, `-webtransport.txt`, `-webrtc.txt` | the same list split by protocol (a test can be in several) |
+| `data/census-static.txt` | tests whose only traffic is markup / META dependencies |
+| `data/census.json` | summary + one row per test with its evidence (format below) |
+| `data/census.jsonl` | checkpoint, one row per line as tests finish (`--resume` reads it) |
+| `data/census.sessions.jsonl` | per-session run-level counts (orphans, WebSocket server cross-check, server status) |
+
+The end-of-run summary:
+
+```
+tests run                   67515
+✔ emit at runtime           …
+◦ static subresources only  …
+· no network                …
+⚠ attempted, not served     …
+✖ errors                    …
+unattributed log lines      …  (never charged to a test)
+websocket handshakes        N credited / M logged by the ws server
+── runtime emitters by protocol ──
+  [http] … [websocket] … [webtransport] … [webrtc] …
+```
+
+`websocket handshakes` is a cross-check: equal numbers mean every handshake
+the WebSocket server saw was credited to a test.
+
+### Before a run
+
+* The census starts its own `wpt serve` on 8000–8446, 8888/8889, 9000 and a
+  UDP port for WebTransport. If another process holds one of those ports, it
+  **refuses to start** and names the PID. It never kills a process it did not
+  start.
+* It then checks that **every protocol server is up** (`• servers ✔ http …`)
+  and refuses to run if one is not, because those tests would silently score
+  "no network". `--allow-missing-servers` overrides this, and the gap is
+  recorded in `servers_down`.
+* Don't run two censuses, or a census alongside your own `wpt serve`, at the
+  same time.
+* Child processes (Chrome, wpt serve) die with the census however it ends, so
+  a killed run leaves nothing holding the ports.
 
 ### Options that change the answer
 
 | option | default | effect |
 |---|---|---|
-| `--timeout` | 20 s | how long to wait for testharness to report. Shorter misses slow tests' late requests |
-| `--settle` | 1.5 s | how long to keep watching after it reports. Catches requests fired after completion |
-| `-j / --jobs` | 8 | parallel browsers. Does not change attribution (see README), only speed |
-| `--types` | testharness, reftest, print-reftest, crashtest | which manifest types to run |
+| `--timeout` | 20 s | how long to wait for testharness to report |
+| `--settle` | 1.5 s | how long to keep watching after it does (late requests) |
+| `-j / --jobs` | 8 | parallel browsers; changes speed, not attribution |
+| `--types` | testharness, reftest, print-reftest, crashtest | manifest types to run |
+| `--filter` | everything | path prefix(es), comma-separated |
 
-### Before a run
+## 3. Build the runnable tree of emitting tests
 
-* The census starts its own `wpt serve` on ports 8000–8446, 8888/8889 and 9000.
-  If another process holds any of them, the census **refuses to start** and
-  names the PID. It never kills a process it did not start.
-* Do not run two censuses, or a census next to a manual `wpt serve`, at the
-  same time.
+```sh
+python -m netcensus subtree data/census.json --out wpt-network            # runtime emitters
+python -m netcensus subtree data/census.json --out wpt-network --include-static
+python -m netcensus tree data/census.json --out TREE.md                   # regenerate TREE.md
+```
 
-## Per-test JSON row (`data/census.json` → `rows[]`)
+`wpt-network/` is a real WPT checkout that contains only the selected tests,
+at their original paths. It also includes everything they need: the `wpt`
+CLI, `tools/`, `resources/`, `common/`, `interfaces/`, shared media, and every
+support file of the directories involved. It has its own fresh
+`MANIFEST.json` and a `NETWORK-TESTS.txt` list.
+
+## 4. `wpt serve`: browse the tests by hand
+
+```sh
+cd wpt-network
+python wpt serve --webtransport-h3      # add --verbose to watch the access log live
+```
+
+Open <http://web-platform.test:8000/> (HTTPS tests: <https://web-platform.test:8443/>).
+With `--verbose`, wptserve prints one line per request; these are the lines
+the census reads:
+
+```
+[… http on port 8000] DEBUG - 200 GET /xhr/resources/content.py (b'http://web-platform.test:8000/xhr/send-redirect.htm') 57
+                              ↑status  ↑path requested          ↑Referer: the page that asked
+```
+
+## 5. `wpt run`: WPT's own runner (pass/fail)
+
+```sh
+cd wpt-network
+python wpt run chrome --binary ../../../browsers/chrome-win64/chrome.exe \
+    --install-webdriver --yes --headless --enable-webtransport-h3 \
+    --include-file NETWORK-TESTS.txt --log-wptreport ../data/wptreport.json --log-mach -
+
+python wpt run chrome --binary … --install-webdriver --yes --headless webrtc/RTCDataChannel-send.html
+```
+
+| flag | meaning |
+|---|---|
+| `--install-webdriver` | download a chromedriver matching `--binary` (or pass `--webdriver-binary`) |
+| `--include-file F` | run exactly the test URLs listed in `F` |
+| `--processes N` | parallel browsers |
+| `--log-wptreport F` | machine-readable pass/fail per subtest |
+| `--no-manifest-update` | skip re-checking `MANIFEST.json` |
+
+`wpt run` reports pass/fail but **does not show the access log**: wptrunner
+pins the server's logger to INFO. Use `verify` (step 1) for the network
+evidence.
+
+## Per-test row (`data/census.json` → `rows[]`)
 
 ```json
 {
-  "url": "/xhr/send-redirect.htm",
+  "url": "/webrtc/RTCDataChannel-send.html",
   "type": "testharness",
-  "emitted": true,                 // ← the answer
-  "n_logged": 46,                  // distinct own requests in the access log
-  "logged": ["GET :8000/xhr/resources/content.py", "…"],
-  "statuses": [200, 301, 302],     // a 404 still counts: the request reached the server
-  "n_cdp": 48,                     // requests the browser attempted (non-noise)
-  "cdp_only": false,               // attempted, but nothing reached the server
-  "completed": true,               // testharness reported
-  "targets": 1,                    // page + frames + workers attached
-  "seconds": 1.9
+  "emitted": true,
+  "runtime": true,                          // ← in data/census.txt
+  "protocols": ["webrtc"],                  // http | websocket | webtransport | webrtc
+  "runtime_requests": ["RTC udp host x.local:58712 -> x.local:58714", "…"],
+  "static_requests": ["GET :8000/webrtc/RTCPeerConnection-helper.js"],
+  "logged": ["…every own item above, labeled…"],
+  "statuses": [200],                        // HTTP statuses; a 404 still reached the server
+  "n_ws": 0, "n_wt": 0, "n_rtc": 14,        // per-protocol evidence counts
+  "n_cdp": 3,                               // requests the browser attempted
+  "cdp_only": false,                        // attempted, nothing reached a server
+  "completed": true,                        // testharness reported
+  "targets": 1,                             // page + frames + workers attached
+  "seconds": 1.4
 }
 ```

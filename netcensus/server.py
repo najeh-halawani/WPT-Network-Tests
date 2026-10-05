@@ -10,6 +10,8 @@ lines are filtered out before they reach any log.
 """
 from __future__ import annotations
 
+import ast
+import re
 import socket
 import subprocess
 import sys
@@ -49,11 +51,77 @@ def is_serving(timeout: float = 3.0) -> bool:
         return False
 
 
+# ---------------------------------------------------------------- preflight ---
+# `wpt serve` starts one server per protocol, and a server that fails to start
+# does NOT stop the others: measured, a missing `aioquic` meant no WebTransport
+# server at all, no error anywhere a run would surface, and every WebTransport
+# test scoring "no network".  So each protocol's server is checked before a
+# single test runs.
+_PORTS_RE = re.compile(r"Using ports: defaultdict\(<class 'list'>, (\{.*\})\)")
+FIX_HINT = {
+    "webtransport": "pip install -r requirements.txt   (needs aioquic==1.2.0)",
+    "websocket": "check the ws/wss lines in the serve log",
+    "h2": "check the h2 lines in the serve log (needs the `h2` package)",
+}
+
+
+def _tcp_open(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def _udp_held(port: int) -> bool:
+    """A UDP server cannot be connected to, but its port can be: if binding
+    it fails, something -- our h3 server -- holds it."""
+    sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sk.bind(("127.0.0.1", port))
+        return False
+    except OSError:
+        return True
+    finally:
+        sk.close()
+
+
+def server_ports(log_path: str) -> dict:
+    """The ports wpt serve actually chose (`auto` ones included), from the
+    `Using ports:` line it writes at startup."""
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = _PORTS_RE.search(line)
+                if m:
+                    return ast.literal_eval(m.group(1))
+    except (OSError, ValueError, SyntaxError):
+        pass
+    return {}
+
+
+def preflight(log_path: str) -> dict[str, bool]:
+    """protocol -> is its server up.  http/https by request, ws/wss/h2 by TCP
+    connect, webtransport (UDP) by its port being held."""
+    ports = server_ports(log_path)
+    first = lambda k: next((p for p in ports.get(k, []) if isinstance(p, int)), None)
+    up = {"http": is_serving()}
+    for name, key in (("https", "https"), ("websocket", "ws"),
+                      ("websocket-tls", "wss"), ("h2", "h2")):
+        p = first(key)
+        up[name] = bool(p) and _tcp_open(p)
+    wt = first("webtransport-h3")
+    up["webtransport"] = bool(wt) and _udp_held(wt)
+    return up
+
+
 class WptServe:
-    def __init__(self, wpt: str, log_path: str):
+    def __init__(self, wpt: str, log_path: str, require_all: bool = True):
         self.wpt = wpt
         self.log_path = log_path
+        self.require_all = require_all
         self.proc = None
+        self.servers: dict[str, bool] = {}
 
     def _reap(self) -> None:
         """Free the ports before starting, without touching anyone else.
@@ -91,8 +159,11 @@ class WptServe:
 
     def start(self, wait: float = 90) -> None:
         self._reap()
+        # --webtransport-h3: the HTTP/3 server is OPT-IN in `wpt serve`
+        # (tools/serve/serve.py skips it otherwise, silently); wptrunner turns
+        # it on for Chrome, and so does this.
         argv = [sys.executable, "./wpt", "serve", "--config", SERVE_CONFIG,
-                "--verbose"]
+                "--verbose", "--webtransport-h3"]
         self.proc = subprocess.Popen(
             argv, cwd=self.wpt, stdout=open(self.log_path, "w"),
             stderr=subprocess.STDOUT, **proc.child_kwargs(new_group=True))
@@ -102,10 +173,32 @@ class WptServe:
             if self.proc.poll() is not None:
                 break
             if is_serving(2):
+                self._check_servers()
                 return
             time.sleep(1)
         self.stop()
         raise ServeError(f"wpt serve did not come up; see {self.log_path}")
+
+    def _check_servers(self, wait: float = 15) -> None:
+        """Every protocol server up, or refuse.  The non-http servers start
+        a few seconds after http answers, so they are given `wait` to appear."""
+        deadline = time.time() + wait
+        while True:
+            self.servers = preflight(self.log_path)
+            down = [k for k, ok in self.servers.items() if not ok]
+            if not down or time.time() > deadline:
+                break
+            time.sleep(1)
+        if down and self.require_all:
+            self.stop()
+            hints = "\n".join(f"  {d:<14} {FIX_HINT.get(d.split('-')[0], 'see the serve log')}"
+                              for d in down)
+            raise ServeError(
+                f"wpt serve is up, but these protocol servers are NOT:\n{hints}\n"
+                f"Every test on those protocols would score \"no network\", so "
+                f"the run is refused.  Fix them, or pass --allow-missing-servers "
+                f"to run anyway (the gap is then recorded in the results).\n"
+                f"serve log: {self.log_path}")
 
     def stop(self) -> None:
         if not self.proc:

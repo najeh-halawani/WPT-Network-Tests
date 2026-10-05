@@ -55,3 +55,4 @@ class RunConfig:
     types: tuple = RUNNABLE_TYPES
     filter: str = ""
     limit: int = 0
+    require_all_servers: bool = True   # refuse to run with a protocol server down

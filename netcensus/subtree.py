@@ -72,11 +72,16 @@ def _logged_top_dirs(rows: list) -> set:
 
 
 def build(wpt: str, census_json: str, out: str, console: Console,
-          force: bool = False, manifest: bool = True) -> dict:
+          force: bool = False, manifest: bool = True,
+          include_static: bool = False) -> dict:
+    """`include_static` also keeps tests whose only traffic is markup
+    subresources / META dependencies (tier "static"); by default the tree
+    holds the tests that emit at RUN time."""
     with open(census_json, encoding="utf-8") as fh:
         census = json.load(fh)
     rows = census["rows"]
-    emitted_urls = {r["url"] for r in rows if r["emitted"]}
+    emitted_urls = {r["url"] for r in rows
+                    if r.get("runtime") or (include_static and r["emitted"])}
     if not emitted_urls:
         raise SystemExit(f"{census_json} has no emitting tests -- nothing to build")
 

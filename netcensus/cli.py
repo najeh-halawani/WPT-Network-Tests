@@ -20,6 +20,9 @@ def _run_args(p: argparse.ArgumentParser) -> None:
                    help="seconds to keep watching after it does")
     p.add_argument("--types", default=",".join(d.types),
                    help="manifest test types to include")
+    p.add_argument("--allow-missing-servers", action="store_true",
+                   help="run even if a protocol server (ws, h2, webtransport) "
+                        "did not start; the gap is recorded in the results")
 
 
 def _cfg(a) -> RunConfig:
@@ -27,7 +30,8 @@ def _cfg(a) -> RunConfig:
                      jobs=getattr(a, "jobs", 1), timeout=a.timeout,
                      settle=a.settle, types=tuple(a.types.split(",")),
                      filter=getattr(a, "filter", ""),
-                     limit=getattr(a, "limit", 0))
+                     limit=getattr(a, "limit", 0),
+                     require_all_servers=not getattr(a, "allow_missing_servers", False))
 
 
 def _check_chrome(cfg: RunConfig, c: Console) -> bool:
@@ -66,7 +70,8 @@ def cmd_verify(a, c: Console) -> int:
 def cmd_subtree(a, c: Console) -> int:
     from . import subtree
     subtree.build(os.path.abspath(a.wpt), a.census, os.path.abspath(a.out), c,
-                  force=a.force, manifest=not a.no_manifest)
+                  force=a.force, manifest=not a.no_manifest,
+                  include_static=a.include_static)
     return 0
 
 
@@ -90,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--version", action="version", version=__version__)
     ap.add_argument("--no-color", action="store_true", help="plain output")
     ap.add_argument("-q", "--quiet", action="store_true",
-                    help="census: print only tests that emit")
+                    help="census: print only tests that emit at runtime")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("list", help="enumerate tests from MANIFEST.json (no browser)")
@@ -123,6 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="replace --out")
     p.add_argument("--no-manifest", action="store_true",
                    help="skip `wpt manifest` in the new tree")
+    p.add_argument("--include-static", action="store_true",
+                   help="also keep tests whose only traffic is static "
+                        "(markup subresources, META dependencies)")
     p.set_defaults(fn=cmd_subtree)
 
     p = sub.add_parser("tree", help="render TREE.md from a census")
@@ -138,8 +146,12 @@ def main(argv: list[str] | None = None) -> int:
     proc.utf8_stdio()
     a = build_parser().parse_args(argv)
     c = Console(color=False if a.no_color else None, quiet=a.quiet)
+    from .server import ServeError
     try:
         return a.fn(a, c)
+    except ServeError as exc:
+        c.error(str(exc))
+        return 2
     except KeyboardInterrupt:
         c.warn("interrupted")
         return 130

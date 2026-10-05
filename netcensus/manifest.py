@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+import posixpath
+from dataclasses import dataclass, field
 
 from .config import EXCLUDE_PREFIXES, HTTP_ORIGIN, HTTPS_ORIGIN
 
@@ -12,6 +13,9 @@ from .config import EXCLUDE_PREFIXES, HTTP_ORIGIN, HTTPS_ORIGIN
 class Test:
     url: str          # e.g. /fetch/api/basic/request-head.any.html
     type: str         # testharness | reftest | ...
+    # Helper scripts the test DECLARES (`// META: script=...`), as absolute
+    # paths.  Loading them is part of loading the test, like testharness.js.
+    deps: tuple = field(default=(), compare=False)
 
     @property
     def origin(self) -> str:
@@ -37,6 +41,20 @@ def load(wpt: str) -> dict:
         return json.load(fh)
 
 
+def _deps(url: str, extras) -> tuple:
+    """Absolute paths of the `META: script=` dependencies in a manifest entry."""
+    if not isinstance(extras, dict):
+        return ()
+    base = posixpath.dirname(url)
+    out = []
+    for item in extras.get("script_metadata") or []:
+        if len(item) == 2 and item[0] == "script":
+            dep = item[1].split("?", 1)[0]
+            out.append(dep if dep.startswith("/")
+                       else posixpath.normpath(posixpath.join(base, dep)))
+    return tuple(out)
+
+
 def tests(manifest: dict, types: tuple, prefix: str = "") -> list[Test]:
     """Every runnable test URL, in tree order, de-duplicated.
 
@@ -44,7 +62,8 @@ def tests(manifest: dict, types: tuple, prefix: str = "") -> list[Test]:
     the URL is the source path, and one source can expand into several URLs
     (the ?include= variants and .any.js / .window.js / .worker.js expansions).
     """
-    prefix = prefix.strip("/")
+    # comma-separated: "webrtc/,webtransport/" selects either
+    prefixes = tuple(p.strip().strip("/") for p in prefix.split(",") if p.strip())
     out: list[Test] = []
     seen: set = set()
 
@@ -61,13 +80,14 @@ def tests(manifest: dict, types: tuple, prefix: str = "") -> list[Test]:
             url = entry[0] if entry and isinstance(entry[0], str) else path
             url = url if url.startswith("/") else "/" + url
             rel = url.lstrip("/")
-            if prefix and not rel.startswith(prefix):
+            if prefixes and not rel.startswith(prefixes):
                 continue
             if rel.startswith(EXCLUDE_PREFIXES):
                 continue
             if url not in seen:
                 seen.add(url)
-                out.append(Test(url, kind))
+                extras = entry[-1] if len(entry) > 1 else None
+                out.append(Test(url, kind, _deps(url, extras)))
 
     for kind in types:
         walk(manifest.get("items", {}).get(kind, {}), "", kind)

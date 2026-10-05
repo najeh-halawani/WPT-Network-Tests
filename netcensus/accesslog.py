@@ -57,6 +57,12 @@ REQ_RE = re.compile(
 REWRITE_RE = re.compile(
     r"^\[[^\]]*?on port \d+\]\s+DEBUG\s+-\s+"
     r"Rewriting request path (?P<src>\S+) to (?P<dst>\S+)\s*$")
+# pywebsocket (the ws/wss servers) logs a handshake without its path, Origin
+# or Referer, so it cannot be attributed to a test.  It is COUNTED instead:
+# "Protocol version is ..." is written exactly once per accepted handshake,
+# and the run checks that total against the handshakes it credited to tests.
+WS_HANDSHAKE_RE = re.compile(
+    r"^\[[^\]]*?\bwss? on port \d+\]\s+DEBUG\s+-\s+Protocol version is ")
 
 
 # ---------------------------------------------------------------- the noise ---
@@ -205,6 +211,7 @@ class LogRouter:
         # and only the count is needed run-wide.  `orphan_total` is exact.
         self._orphans: collections.deque = collections.deque(maxlen=50000)
         self.orphan_total = 0
+        self.ws_handshakes = 0                 # counted, see WS_HANDSHAKE_RE
         self._aliases: dict[str, str] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -291,6 +298,9 @@ class LogRouter:
 
         now = time.time()
         for line in data.splitlines():
+            if WS_HANDSHAKE_RE.match(line):
+                self.ws_handshakes += 1
+                continue
             rw = REWRITE_RE.match(line)
             if rw:
                 self._aliases[rw.group("dst")] = rw.group("src")

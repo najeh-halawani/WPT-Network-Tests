@@ -9,7 +9,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -116,6 +115,15 @@ class TestParsing(LogFixture):
         self.write(resp(TEST, referer=None))
         self.assertEqual([r["path"] for r in self.router.take(key)], [TEST])
         self.assertEqual(self.router.orphan_total, 0)
+
+    def test_websocket_server_handshakes_are_counted(self):
+        self.write("[2026-10-05 12:58:37,535 ws on port 8888] DEBUG - "
+                   "Protocol version is RFC 6455\n")
+        self.write("[2026-10-05 12:58:37,535 wss on port 8889] DEBUG - "
+                   "Protocol version is RFC 6455\n")
+        self.write("[2026-10-05 12:58:37,535 ws on port 8888] DEBUG - Reset\n")
+        self.router.orphans()                                  # forces a drain
+        self.assertEqual(self.router.ws_handshakes, 2)
 
     def test_lines_before_start_are_ignored(self):
         self.router.stop()
@@ -279,6 +287,178 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(TestResult.from_dict(json.loads(json.dumps(r.to_dict()))), r)
 
 
+class TestTiers(unittest.TestCase):
+    """runtime vs static: how each own request was initiated."""
+    T = manifest.Test(TEST, "testharness", deps=("/fetch/api/resources/utils.js",))
+
+    def rec(self, path, port=8000):
+        return {"port": port, "method": "GET", "path": path, "status": 200,
+                "referer": REF}
+
+    def cdp(self, path, initiator, port=8000):
+        return {"url": f"http://web-platform.test:{port}{path}", "method": "GET",
+                "type": "", "initiator": initiator}
+
+    def test_script_initiated_is_runtime(self):
+        r = classify(self.T, Visit(requests=[self.cdp("/x.py?a=1", "script")]),
+                     [self.rec("/x.py?a=1")])
+        self.assertTrue(r.runtime)
+        self.assertEqual(r.runtime_requests, ["GET :8000/x.py?a=1"])
+        self.assertEqual(r.tier, "runtime")
+
+    def test_parser_initiated_is_static(self):
+        r = classify(self.T, Visit(requests=[self.cdp("/img.png", "parser")]),
+                     [self.rec("/img.png")])
+        self.assertTrue(r.emitted)
+        self.assertFalse(r.runtime)
+        self.assertEqual(r.tier, "static")
+
+    def test_declared_meta_dependency_is_static_even_from_script(self):
+        # in a worker variant importScripts() loads it: initiator is script
+        r = classify(self.T, Visit(requests=[
+            self.cdp("/fetch/api/resources/utils.js", "script")]),
+            [self.rec("/fetch/api/resources/utils.js")])
+        self.assertEqual(r.tier, "static")
+
+    def test_same_url_from_markup_and_script_is_runtime(self):
+        r = classify(self.T, Visit(requests=[self.cdp("/a.txt", "parser"),
+                                             self.cdp("/a.txt", "script")]),
+                     [self.rec("/a.txt")])
+        self.assertTrue(r.runtime)
+
+    def test_unseen_by_browser_is_runtime_not_static(self):
+        # reached the server, CDP never saw it (browser-process fetch)
+        r = classify(self.T, Visit(), [self.rec("/manifest.json")])
+        self.assertTrue(r.runtime)
+
+    def test_accepted_websocket_is_runtime_evidence(self):
+        v = Visit(requests=[
+            {"url": "ws://web-platform.test:8888/echo", "method": "GET",
+             "type": "WebSocket", "initiator": "script", "status": 101},
+            {"url": "wss://web-platform.test:8889/refused", "method": "GET",
+             "type": "WebSocket", "initiator": "script", "status": None}])
+        r = classify(self.T, v, [])
+        self.assertTrue(r.emitted and r.runtime)
+        self.assertEqual(r.runtime_requests, ["WS :8888/echo"])
+        self.assertEqual(r.n_ws, 1)
+        self.assertFalse(r.cdp_only)
+
+    def test_websocket_sent_but_closed_while_connecting_counts(self):
+        v = Visit(requests=[{"url": "ws://web-platform.test:8888/sleep", "method": "GET",
+                             "type": "WebSocket", "initiator": "script",
+                             "status": None, "sent": True}])
+        r = classify(self.T, v, [])
+        self.assertEqual((r.runtime, r.n_ws, r.protocols), (True, 1, ["websocket"]))
+
+    def test_established_webtransport_is_evidence(self):
+        v = Visit(requests=[
+            {"url": "https://web-platform.test:54164/webtransport/handlers/echo.py",
+             "method": "CONNECT", "type": "WebTransport", "initiator": "script",
+             "established": True},
+            {"url": "https://web-platform.test:54164/never", "method": "CONNECT",
+             "type": "WebTransport", "initiator": "script", "established": False}])
+        r = classify(self.T, v, [])
+        self.assertEqual(r.runtime_requests, ["WT :54164/webtransport/handlers/echo.py"])
+        self.assertEqual((r.n_wt, r.protocols), (1, ["webtransport"]))
+
+    def test_failed_webtransport_is_cdp_only(self):
+        v = Visit(requests=[{"url": "https://web-platform.test:1/x", "method": "CONNECT",
+                             "type": "WebTransport", "initiator": "script",
+                             "established": False}])
+        self.assertEqual(classify(self.T, v, []).tier, "cdp-only")
+
+    def test_ice_connected_peer_is_webrtc_evidence(self):
+        pair = {"local": {"protocol": "udp", "type": "host", "address": "a.local", "port": 1},
+                "remote": {"protocol": "udp", "type": "host", "address": "a.local", "port": 2}}
+        r = classify(self.T, Visit(rtc=[{"state": "connected", "pair": pair},
+                                        {"state": "connected", "pair": None}]), [])
+        self.assertEqual(r.runtime_requests,
+                         ["RTC ice-connected", "RTC udp host a.local:1 -> a.local:2"])
+        self.assertEqual((r.n_rtc, r.protocols), (2, ["webrtc"]))
+
+    def test_protocols_are_ordered_and_combined(self):
+        v = Visit(requests=[{"url": "http://web-platform.test:8000/x", "method": "GET",
+                             "type": "Fetch", "initiator": "script"}],
+                  rtc=[{"state": "completed", "pair": None}])
+        r = classify(self.T, v, [self.rec("/x")])
+        self.assertEqual(r.protocols, ["http", "webrtc"])
+
+    def test_refused_websocket_is_not_evidence(self):
+        v = Visit(requests=[{"url": "ws://web-platform.test:8888/x", "method": "GET",
+                             "type": "WebSocket", "initiator": "script",
+                             "status": None}])
+        r = classify(self.T, v, [])
+        self.assertFalse(r.emitted)
+        self.assertTrue(r.cdp_only)
+
+    def test_https_default_port_join(self):
+        v = Visit(requests=[{"url": "https://web-platform.test/p", "method": "GET",
+                             "type": "", "initiator": "parser"}])
+        r = classify(self.T, v, [self.rec("/p", port=443)])
+        self.assertEqual(r.tier, "static")
+
+
+class TestPreflight(unittest.TestCase):
+    def test_server_ports_parsed_from_serve_log(self):
+        from netcensus import server
+        fd, p = tempfile.mkstemp(suffix=".log")
+        os.close(fd)
+        with open(p, "w") as fh:
+            fh.write("noise\nDEBUG:root:Using ports: defaultdict(<class 'list'>, "
+                     "{'http': [8000, 8010], 'ws': [8888], "
+                     "'webtransport-h3': [54164], 'h2': [9000]})\n")
+        self.assertEqual(server.server_ports(p)["webtransport-h3"], [54164])
+        os.remove(p)
+
+    def test_udp_port_held_detection(self):
+        import socket
+        from netcensus import server
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+        self.assertTrue(server._udp_held(port))
+        sk.close()
+        self.assertFalse(server._udp_held(port))
+
+
+class TestFinalize(unittest.TestCase):
+    """The end-of-run path: it runs once, hours in, so it is tested here."""
+
+    def test_outputs_and_last_row_wins(self):
+        from netcensus.config import RunConfig
+        from netcensus.runner import Census
+        d = tempfile.mkdtemp()
+        out = os.path.join(d, "census.json")
+        rows = [
+            {"url": "/a.html", "type": "testharness", "emitted": True, "runtime": True},
+            {"url": "/b.html", "type": "testharness", "emitted": True, "runtime": False},
+            {"url": "/c.html", "type": "reftest", "emitted": False, "runtime": False},
+            {"url": "/d.html", "type": "testharness", "emitted": False,
+             "runtime": False, "cdp_only": True},
+            {"url": "/c.html", "type": "reftest", "emitted": True, "runtime": True},
+        ]
+        with open(os.path.join(d, "census.jsonl"), "w") as fh:
+            fh.writelines(json.dumps(r) + "\n" for r in rows)
+        c = Census(RunConfig(wpt=d, chrome="x"), out, Console(color=False,
+                                                              stream=io.StringIO()))
+        # two sessions (a run and a --resume); a third was killed before
+        # logging, which is what rows_without_session reports
+        c._log_session({"rows": 2, "orphans": 5, "ws_server": 3, "ws_attributed": 3})
+        c._log_session({"rows": 2, "orphans": 2, "ws_server": 1, "ws_attributed": 0})
+        s = c.finalize()
+        self.assertEqual((s["n_tests"], s["n_runtime"], s["n_static_only"],
+                          s["n_none"], s["n_cdp_only"]), (4, 2, 1, 0, 1))
+        self.assertEqual((s["sessions"], s["orphan_requests"],
+                          s["ws_handshakes_server"], s["ws_handshakes_attributed"],
+                          s["rows_without_session"]), (2, 7, 4, 3, 1))
+        self.assertEqual(open(os.path.join(d, "census.txt")).read().split(),
+                         ["/a.html", "/c.html"])
+        self.assertEqual(open(os.path.join(d, "census-static.txt")).read().split(),
+                         ["/b.html"])
+        self.assertEqual(json.load(open(out))["n_tests"], 4)
+        Console(color=False, stream=io.StringIO()).summary(s)   # renders
+
+
 class TestManifest(unittest.TestCase):
     MAN = {"items": {
         "testharness": {"fetch": {"api": {
@@ -309,6 +489,15 @@ class TestManifest(unittest.TestCase):
         self.assertTrue(manifest.Test("/a.html", "t").full_url.startswith("http://"))
         self.assertTrue(manifest.Test("/a.serviceworker.html", "t").origin.startswith("https"))
 
+    def test_meta_script_deps_resolved(self):
+        m = {"items": {"testharness": {"IndexedDB": {"x.any.js": [
+            "h", ["IndexedDB/x.any.html", {"script_metadata": [
+                ["global", "window"], ["script", "resources/support.js"],
+                ["script", "/common/utils.js"], ["script", "../top.js?v=1"]]}]]}}}}
+        (t,) = manifest.tests(m, ("testharness",))
+        self.assertEqual(t.deps, ("/IndexedDB/resources/support.js",
+                                  "/common/utils.js", "/top.js"))
+
     def test_source_files_maps_urls_back(self):
         m = manifest.source_files(self.MAN, {"/fetch/api/a.any.worker.html",
                                              "/fetch/api/b.https.html"})
@@ -320,8 +509,9 @@ class TestConsole(unittest.TestCase):
     def test_plain_output_has_no_escapes_and_two_lines(self):
         buf = io.StringIO()
         c = Console(color=False, stream=buf)
-        r = TestResult(url=TEST, type="testharness", emitted=True, n_logged=1,
-                       logged=["GET :8000/x"], completed=True)
+        r = TestResult(url=TEST, type="testharness", emitted=True, runtime=True,
+                       n_logged=1, logged=["GET :8000/x"],
+                       runtime_requests=["GET :8000/x"], completed=True)
         c.test_result(1, 10, r)
         out = buf.getvalue()
         self.assertNotIn("\033[", out)

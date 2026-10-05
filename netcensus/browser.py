@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -79,6 +80,58 @@ _DONE_HOOK = r"""
 })();
 """
 
+# WebRTC has no server to read a log from: peers connect to each other over
+# real UDP (or TCP) sockets.  The evidence is ICE reaching `connected`, which
+# requires a STUN connectivity check to have made a request/response round
+# trip over the network stack.  This observer records that, per peer, with
+# the selected candidate pair (protocol, candidate type, address, port).
+#
+# It is deliberately PASSIVE.  It does not replace the RTCPeerConnection
+# constructor -- that breaks `instanceof`, subclassing and idlharness's
+# identity checks, i.e. it would change what the test does.  It wraps
+# setLocalDescription / setRemoteDescription (every connecting peer calls
+# one), keeps their name and length, and only adds a state listener.
+_RTC_HOOK = r"""
+(() => {
+  const P = window.RTCPeerConnection;
+  if (window.__netcensusRtc || typeof P !== 'function') return;
+  const log = window.__netcensusRtc = [];
+  const seen = new WeakSet();
+  const pairOf = (pc) => {
+    try {
+      const t = (pc.sctp && pc.sctp.transport)
+        || pc.getSenders().map(s => s.transport).find(Boolean)
+        || pc.getReceivers().map(r => r.transport).find(Boolean);
+      const p = t && t.iceTransport && t.iceTransport.getSelectedCandidatePair();
+      const c = (x) => x && {protocol: x.protocol, type: x.type,
+                             address: x.address, port: x.port};
+      return p ? {local: c(p.local), remote: c(p.remote)} : null;
+    } catch (e) { return null; }
+  };
+  const watch = (pc) => {
+    if (seen.has(pc)) return;
+    seen.add(pc);
+    let done = false;
+    pc.addEventListener('iceconnectionstatechange', () => {
+      const s = pc.iceConnectionState;
+      if (!done && (s === 'connected' || s === 'completed')) {
+        done = true;
+        log.push({state: s, pair: pairOf(pc), t: Date.now()});
+      }
+    });
+  };
+  for (const name of ['setLocalDescription', 'setRemoteDescription']) {
+    const d = Object.getOwnPropertyDescriptor(P.prototype, name);
+    if (!d || typeof d.value !== 'function') continue;
+    const orig = d.value;
+    const wrapped = {[name](...a) { try { watch(this); } catch (e) {}
+                                    return orig.apply(this, a); }}[name];
+    Object.defineProperty(wrapped, 'length', {value: orig.length});
+    Object.defineProperty(P.prototype, name, {...d, value: wrapped});
+  }
+})();
+"""
+
 CHROME_FLAGS = (
     "--headless=new", "--no-sandbox", "--disable-gpu",
     "--no-first-run", "--no-default-browser-check",
@@ -98,7 +151,36 @@ CHROME_FLAGS = (
     # Cross-origin frames become their own targets, so auto-attach reports
     # their requests as well.
     "--site-per-process",
+    # -- the rest mirror tools/wptrunner/wptrunner/browsers/chrome.py --------
+    # Each one decides whether a family of tests gets far enough to touch the
+    # network at all; without it the test bails and reads as "no network".
+    "--webtransport-developer-mode",          # WebTransport to the local h3 server
+    "--use-fake-device-for-media-stream",     # getUserMedia -> WebRTC tests
+    "--use-fake-ui-for-media-stream",
+    "--autoplay-policy=no-user-gesture-required",
+    "--use-fake-ui-for-fedcm",                # FedCM fetches its IdP config
+    "--short-reporting-delay",                # Reporting API sends within settle
 )
+
+
+def spki_flag(wpt: str) -> str | None:
+    """`--ignore-certificate-errors-spki-list` for the WPT certificate.
+
+    --ignore-certificate-errors does not cover QUIC, so without this every
+    WebTransport session fails its TLS handshake and the test reads as "no
+    network".  The fingerprints are read from the WPT checkout itself
+    (generated there by `wpt regen-certs`), exactly the list wptrunner passes,
+    so they always match the certificate this server actually presents.
+    """
+    path = os.path.join(wpt, "tools", "wptrunner", "wptrunner", "browsers",
+                        "chrome_spki_certs.py")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError:
+        return None
+    fps = re.findall(r"^\w+_FINGERPRINT\s*=\s*'([^']+)'", src, re.M)
+    return "--ignore-certificate-errors-spki-list=" + ",".join(fps) if fps else None
 
 
 @dataclass
@@ -108,6 +190,7 @@ class Visit:
     requests: list = field(default_factory=list)
     error: str | None = None
     seconds: float = 0.0       # navigate -> harness reported (excl. settle)
+    rtc: list = field(default_factory=list)   # ICE-connected peers (_RTC_HOOK)
 
 
 class Browser:
@@ -115,12 +198,13 @@ class Browser:
     not fail: the second browser silently attaches to the first, and every
     worker's tests run as background tabs in one browser."""
 
-    def __init__(self, chrome: str, slot: int):
+    def __init__(self, chrome: str, slot: int, wpt: str | None = None):
         self.slot = slot
         self.profile = proc.tmpdir(f"netcensus_profile_{slot}")
         shutil.rmtree(self.profile, ignore_errors=True)
         os.makedirs(self.profile, exist_ok=True)
-        args = [chrome, *CHROME_FLAGS,
+        spki = spki_flag(wpt) if wpt else None
+        args = [chrome, *CHROME_FLAGS, *([spki] if spki else []),
                 # 0 = Chrome picks a free port and writes it to the profile.
                 "--remote-debugging-port=0",
                 f"--user-data-dir={self.profile}", "about:blank"]
@@ -129,6 +213,20 @@ class Browser:
             stderr=subprocess.STDOUT, **proc.child_kwargs())
         proc.bind_to_parent(self.proc)
         self.cdp = CDP(self._devtools_url())
+        # SHARED WORKERS belong to the browser, not to the page that started
+        # them, so the page-level auto-attach below never reaches them: their
+        # fetches still show up in the access log (Referer = the worker
+        # script, which OwnDocs maps back to the test), but a WebSocket opened
+        # inside one has no other witness.  Measured on websockets/: the ws
+        # server logged 869 handshakes and the census credited 731, with
+        # every sharedworker variant at 0.  A browser-level auto-attach,
+        # filtered to shared workers and paused on start like every other
+        # target, closes that.  Each browser runs one test at a time, so a
+        # shared worker that appears during a visit belongs to that test.
+        self.cdp.try_send("Target.setAutoAttach",
+                          {"autoAttach": True, "waitForDebuggerOnStart": True,
+                           "flatten": True,
+                           "filter": [{"type": "shared_worker"}]})
 
     def _devtools_url(self, wait: float = 30) -> str:
         deadline = time.time() + wait
@@ -180,6 +278,8 @@ class Browser:
             send("Runtime.enable", session=sess)
             send("Page.addScriptToEvaluateOnNewDocument",
                  {"source": _DONE_HOOK}, session=sess)
+            send("Page.addScriptToEvaluateOnNewDocument",
+                 {"source": _RTC_HOOK}, session=sess)
         # Cascade: every popup, OOPIF and worker the test creates is attached
         # PAUSED, instrumented, then resumed -- so none of its requests can be
         # sent before we are listening.
@@ -193,6 +293,7 @@ class Browser:
         sess = self.cdp.send("Target.attachToTarget",
                              {"targetId": tid, "flatten": True})["sessionId"]
         sessions, reqs = {sess}, {}
+        self._docs = {sess}           # document sessions (page + iframes)
         v = Visit()
         try:
             self._init_session(sess)
@@ -215,6 +316,17 @@ class Browser:
             # reports at all, still count.  Keep watching for `settle`.
             time.sleep(settle)
             self._absorb(self.cdp.drain(), sessions, reqs)
+            # Collected before the tab closes: the log outlives pc.close(),
+            # but not the document.
+            for ds in self._docs:
+                r = self.cdp.try_send(
+                    "Runtime.evaluate",
+                    {"expression": "JSON.stringify(window.__netcensusRtc || [])",
+                     "returnByValue": True}, session=ds, timeout=2)
+                try:
+                    v.rtc += json.loads(r["result"]["value"]) if r else []
+                except (KeyError, TypeError, ValueError):
+                    pass
         finally:
             self.cdp.try_send("Target.closeTarget", {"targetId": tid})
         v.targets = len(sessions)
@@ -228,6 +340,8 @@ class Browser:
                 ns = e["params"]["sessionId"]
                 kind = e["params"].get("targetInfo", {}).get("type", "")
                 sessions.add(ns)
+                if kind == "iframe":
+                    self._docs.add(ns)
                 self._init_session(ns, kind, wait=False)
                 self.cdp.post("Runtime.runIfWaitingForDebugger", session=ns)
                 continue
@@ -236,9 +350,49 @@ class Browser:
             p = e.get("params", {})
             if m == "Network.requestWillBeSent":
                 req = p.get("request", {})
-                reqs[p.get("requestId", "")] = {
+                rid = p.get("requestId", "")
+                # A redirect re-uses the requestId for the next hop.  Each hop
+                # is its own request on the wire, so each keeps its own row,
+                # and inherits how the FIRST hop was initiated.
+                first = reqs.get(rid)
+                key = rid if first is None else f"{rid}#{len(reqs)}"
+                reqs[key] = {
                     "url": req.get("url", ""), "method": req.get("method", ""),
-                    "type": p.get("type", "")}
+                    "type": p.get("type", ""),
+                    "initiator": (first or {}).get("initiator")
+                                 or p.get("initiator", {}).get("type", ""),
+                    "redirect": first is not None}
             elif m == "Network.webSocketCreated":
                 reqs["ws:" + p.get("requestId", "")] = {
-                    "url": p.get("url", ""), "method": "WS", "type": "WebSocket"}
+                    "url": p.get("url", ""), "method": "GET",
+                    "type": "WebSocket", "initiator": "script",
+                    "redirect": False, "status": None}
+            elif m == "Network.webSocketHandshakeResponseReceived":
+                # The server's answer to the handshake.  101 can only come
+                # from a server that accepted it, which makes it proof the
+                # request reached the WebSocket server -- a server whose own
+                # log names no path or referer and so cannot attribute it.
+                ws = reqs.get("ws:" + p.get("requestId", ""))
+                if ws is not None:
+                    ws["status"] = p.get("response", {}).get("status")
+            elif m == "Network.webSocketWillSendHandshakeRequest":
+                # Fired when the handshake request is written on an
+                # ESTABLISHED connection.  A test that closes the socket while
+                # it is still connecting never gets a 101, yet its request did
+                # reach the server -- measured: 17 such tests in websockets/,
+                # each logged by the ws server and invisible to a 101-only rule.
+                ws = reqs.get("ws:" + p.get("requestId", ""))
+                if ws is not None:
+                    ws["sent"] = True
+            elif m == "Network.webTransportCreated":
+                reqs["wt:" + p.get("transportId", "")] = {
+                    "url": p.get("url", ""), "method": "CONNECT",
+                    "type": "WebTransport", "initiator": "script",
+                    "redirect": False, "established": False}
+            elif m == "Network.webTransportConnectionEstablished":
+                # QUIC handshake done AND the server accepted the HTTP/3
+                # extended CONNECT.  The h3 server logs no sessions, so this
+                # answer is the evidence it was reached.
+                wt = reqs.get("wt:" + p.get("transportId", ""))
+                if wt is not None:
+                    wt["established"] = True

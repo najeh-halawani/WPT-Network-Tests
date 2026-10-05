@@ -1,1 +1,5 @@
 websockets>=12
+# WPT runs its WebTransport (HTTP/3) server on aioquic. Without it `wpt serve`
+# silently skips that server and every WebTransport test reads as "no network".
+# Same pin as wpt/tools/webtransport/requirements.txt.
+aioquic==1.2.0

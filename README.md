@@ -1,117 +1,139 @@
 # WPT network-emitting tests
 
-The [Web Platform Tests](https://web-platform-tests.org/) (WPT) contain ~37,000
-runnable tests. Only some of them make the browser send a network request
-beyond loading the test page itself. This kit finds those tests, proves each
-one by checking **wptserve's access log**, and packages them as a runnable WPT
-tree you can `wpt serve` / `wpt run` directly.
+The [Web Platform Tests](https://web-platform-tests.org/) (WPT) contain about
+67,500 runnable tests (37.5k testharness, 27.6k reftests, 1.9k crashtests,
+0.4k print-reftests). Only some of them make the browser put a request on
+the wire beyond loading the test itself. This kit finds those tests and proves
+each one with evidence from the far side of the connection, for **every
+protocol WPT serves: HTTP(S), HTTP/2, WebSocket, WebTransport and WebRTC**.
+It then packages them as a runnable WPT tree you can `wpt serve` /
+`wpt run` directly.
 
-Nothing here is LNA-specific: stock WPT tests, stock headless Chrome flags,
-no shims and no retargeting.
+Nothing here is LNA-specific: stock WPT tests, Chrome configured the way
+wptrunner configures it, no shims and no retargeting.
 
 | you want to… | read / run |
 |---|---|
 | run the tests | [HOW-TO-RUN.md](HOW-TO-RUN.md) |
 | see where the tests are and how the manifest is laid out | [TREE.md](TREE.md) |
-| the list of emitting tests | [`data/census.txt`](data/) (one URL per line) |
-| per-test evidence (what the server logged) | `data/census.json` |
+| the list of emitting tests | `data/census.txt` (one URL per line) |
+| the same list split by protocol | `data/census-{http,websocket,webtransport,webrtc}.txt` |
+| per-test evidence | `data/census.json` |
 | check one test yourself | `python -m netcensus verify <test>` |
 
-## What "emits network" means here
+## What counts as "emits network"
 
-A test counts as emitting when **wptserve's access log holds at least one
-request the test caused, other than loading the test itself.**
+Every claim needs evidence from the other side of the connection. That
+evidence differs per protocol, because WPT runs a different server for each:
 
-Every WPT test is served over HTTP, so the test document and the harness
-(`testharness.js`, `testharnessreport.js`, `testdriver*.js`, `favicon.ico`, and
-for generated tests, the `foo.any.js` / `foo.any.worker.js` wrapper scripts)
-appear in the log for *every* test. Those are filtered out by name
-([`netcensus/accesslog.py`](netcensus/accesslog.py), `HARNESS_PATHS` and
-`OwnDocs`). Whatever remains is the test's own traffic: a `fetch()`, an XHR, an
-`<img>`, an iframe, a worker's import, a redirect chain, and so on.
+| protocol | server (`wpt serve`) | evidence that a test's request reached it |
+|---|---|---|
+| HTTP(S), HTTP/2 | wptserve `:8000/:8443/…`, h2 `:9000` | a line in wptserve's **access log**, credited to the test by its `Referer` |
+| WebSocket | pywebsocket `:8888/:8889` | the handshake request was written on an established connection, or the server answered it (101). Each run also compares the total with the number of handshakes **the WebSocket server itself logged** |
+| WebTransport | aioquic HTTP/3 (UDP, auto port) | the session was **established**: QUIC handshake done and the server accepted the HTTP/3 CONNECT (this server logs no sessions) |
+| WebRTC | none: peer to peer | ICE reached **connected**: a STUN connectivity check made a request/response round trip over a real UDP/TCP socket. The selected candidate pair is recorded |
 
-Why the server, not the source code: a test that *mentions* `fetch()` is not a
-test that *sends* a request. One example is
-`fetch/api/basic/request-head.any.js`. It calls `fetch(".", {method: "HEAD", body: "test"})`,
-which is rejected with a `TypeError` before any request is made. A regex scan
-lists it as a fetch test. The access log shows that it sends nothing.
+HTTP traffic is split into two tiers, because not every request a test causes
+is the test *doing* something:
+
+* **static**: in the markup (`<script src>`, `<img>`, CSS) or a declared
+  `// META: script=helper.js` dependency. Loading these is part of loading the
+  test, like `testharness.js`.
+* **runtime**: issued by running code: `fetch()`, XHR, `sendBeacon`, dynamic
+  elements, worker imports, CORS preflights, redirect hops, and anything the
+  browser sent on the page's behalf.
+
+WebSocket, WebTransport and WebRTC are always runtime. **`data/census.txt`
+lists the tests with runtime evidence**; `census-static.txt` lists the tests
+whose only traffic is static.
+
+The test document itself and the harness (`testharness.js`,
+`testharnessreport.js`, `testdriver*.js`, `favicon.ico`, and for generated
+tests the `foo.any.js` / `foo.any.worker.js` wrapper scripts) are filtered out
+by name ([`netcensus/accesslog.py`](netcensus/accesslog.py)).
+
+**Why evidence, not source code.** A test that *mentions* `fetch()` is not a
+test that *sends* a request. For example, `fetch/api/basic/request-head.any.js`
+calls `fetch(".", {method: "HEAD", body: "test"})`, which is rejected with a
+`TypeError` before anything is sent. A regex scan lists it; the access log
+shows nothing.
 
 ## How a test is checked
 
 ```
- MANIFEST.json ──► every runnable test URL (testharness, reftest, print-reftest, crashtest)
+ MANIFEST.json ──► every runnable test URL, plus its declared META dependencies
                        │
                        ▼
- headless Chrome ──► open the test in a fresh tab, wait for testharness to report,
- (over CDP)          keep watching 1.5 s for late requests
-                       │                                  │
-                       ▼                                  ▼
-          wpt serve --verbose access log           browser's own request list (CDP)
-          lines attributed by Referer              (context only)
-                       │                                  │
-                       └──────────────► classify ◄────────┘
-                                          │
-                       emitted  ·  no network  ·  attempted-but-never-served
+ headless Chrome ──► fresh tab per test; every frame, worker, shared worker and
+ (CDP, wptrunner     service worker is attached PAUSED, instrumented, resumed;
+  flags)             wait for testharness to report, then 1.5 s more
+        │                  │                       │                      │
+        ▼                  ▼                       ▼                      ▼
+  wptserve access log   WebSocket handshake    WebTransport session   WebRTC ICE
+  (Referer-attributed)  sent / answered        established            connected
+        └──────────────────┴───────────┬───────────┴──────────────────────┘
+                                       ▼
+                     classify:  runtime · static only · no network · attempted-not-served
 ```
 
-The two sources answer different questions:
+Before the first test, the run checks that **every protocol server actually
+started**. It refuses to run if one didn't. A missing server (for example,
+WebTransport without `aioquic`) otherwise produces "no network" for that whole
+protocol with no error anywhere.
 
-* **Access log**: did the request reach the server? This alone decides
-  `emitted`.
-* **Browser request list (CDP)**: did the browser try? This is reported as
-  `cdp_only` when the browser made an attempt the server never saw (blocked,
-  served from cache, or sent to a host other than the WPT server). Those tests
-  are kept out of the list but recorded in the JSON, because they are often
-  interesting in their own right.
+### Attribution, and its known limits
 
-### Attribution, and its known limit
-
-Each log line is credited to the test named in its `Referer`. Lines arrive
-from many tests at once, and attribution still works because it does not
-depend on timing. It covers requests made from inside a test's own workers,
-because their Referer is the test's wrapper script. To keep that
-unambiguous, all variants of one source file (`foo.any.html`,
-`foo.any.worker.html`, …) run back to back on the same worker.
-
-Two kinds of line cannot be tied to a single test: lines with **no Referer**
-(fetches made by the browser process itself) and requests from a **nested
-document** (an iframe's own subresources, whose Referer is the iframe). These
-are counted as `orphan_requests` and never credited to any test. So a parallel
-census can **under-count** a test's traffic, but it can never invent traffic.
-`verify` runs tests one at a time and prints every line, including these.
+* HTTP log lines are credited by `Referer`, so tests can run in parallel
+  without mixing. Requests made inside a test's workers carry the worker
+  script as Referer, and are credited to the test. All variants of one source
+  file run on the same worker, so this is never ambiguous.
+* Lines with **no Referer** (browser-process fetches) or from a **nested
+  document** (an iframe's own subresources) cannot be credited to a single
+  test. They are counted as `orphan_requests` and never charged to anyone. A
+  parallel census can therefore **under-count** a test's traffic, never invent
+  any. `verify` runs serially and prints every line.
+* WebSocket over HTTP/2 (`?wpt_flags=h2` variants) does not complete in this
+  configuration: the h2 server logs no handshakes for them, and they score
+  as no WebSocket traffic, which is what happened on the wire.
+* WebRTC evidence comes from a passive observer in the page. It wraps
+  `setLocalDescription`/`setRemoteDescription` to watch ICE state and
+  deliberately leaves `RTCPeerConnection` itself untouched.
 
 ## Layout
 
 ```
 network-tests/
 ├── README.md              this file
-├── HOW-TO-RUN.md          wpt serve, wpt run, the census, verify
+├── HOW-TO-RUN.md          setup, wpt serve, wpt run, census, verify, large runs
 ├── TREE.md                test tree + manifest tree (generated: netcensus tree)
+├── requirements.txt       websockets, aioquic (WebTransport server)
 ├── wpt_serve_config.json  wptserve ports used by the census
 ├── netcensus/             the tool  (python -m netcensus …)
 │   ├── cli.py             subcommands: list, census, verify, subtree, tree
 │   ├── config.py          paths, ports, defaults (stated once)
-│   ├── manifest.py        reads MANIFEST.json → test URLs; URL → source file
-│   ├── server.py          wpt serve --verbose lifecycle, port safety
-│   ├── browser.py         headless Chrome over CDP, one per worker
+│   ├── manifest.py        MANIFEST.json → test URLs + META deps; URL → source file
+│   ├── server.py          wpt serve lifecycle, per-protocol preflight, port safety
+│   ├── browser.py         headless Chrome over CDP: wptrunner flags, target
+│   │                      cascade, WebSocket/WebTransport events, WebRTC observer
 │   ├── cdp.py             minimal DevTools client
-│   ├── accesslog.py       access-log follower: parse, pair, attribute, filter noise
-│   ├── classify.py        THE decision: emitted / no network / cdp_only
-│   ├── runner.py          parallel census, grouping, checkpoint + resume
+│   ├── accesslog.py       access-log follower: parse, pair, attribute, filter noise,
+│   │                      count WebSocket-server handshakes
+│   ├── classify.py        THE decision: per-protocol evidence, runtime vs static
+│   ├── runner.py          parallel census, grouping, checkpoint/resume, session ledger
 │   ├── verify.py          serial check with full colored evidence
 │   ├── subtree.py         build the pruned runnable WPT tree
 │   ├── tree.py            render TREE.md
-│   ├── console.py         colored per-test output
-│   └── proc.py            process-tree / port helpers (Windows + POSIX)
+│   ├── console.py         colored per-test output and run summary
+│   └── proc.py            process trees, ports; children die with the run
 ├── tests/                 unit tests (no browser, no server)
-├── data/                  census output: census.json, census.jsonl, census.txt
-└── wpt-network/           generated, runnable WPT tree of emitting tests (gitignored)
+├── data/                  census output (see HOW-TO-RUN.md)
+└── wpt-network/           generated runnable WPT tree of emitting tests (gitignored)
 ```
 
 ## Requirements
 
-* Python ≥ 3.10 with `websockets` ≥ 12 (`pip install -r requirements.txt`)
-* A WPT checkout with `MANIFEST.json` (default `../../wpt`, override with `--wpt` / `WPT_ROOT`)
-* Chrome or Chromium (default `../../browsers/chrome-win64/chrome.exe`, override with `--chrome` / `WPT_CHROME`)
+* Python ≥ 3.10, then `pip install -r requirements.txt`
+* A WPT checkout with `MANIFEST.json` (default `../../wpt`, or `--wpt` / `WPT_ROOT`)
+* Chrome or Chromium (default `../../browsers/chrome-win64/chrome.exe`, or `--chrome` / `WPT_CHROME`)
 
 Run the unit tests with `python -m unittest discover -s tests -v`.
