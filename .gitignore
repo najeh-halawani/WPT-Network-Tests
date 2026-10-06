@@ -6,3 +6,8 @@ __pycache__/
 # census working files: checkpoint, session ledger, console log
 /data/*.jsonl
 /data/*.log
+# full census as raw JSON (~260 MB, over GitHub's 100 MB limit): data/census.json.gz
+# is committed instead (gunzip -k data/census.json.gz)
+/data/census.json
+# macOS bring-up checks (smoke / verify before the full run)
+/data/mac-*

@@ -9,9 +9,6 @@ protocol WPT serves: HTTP(S), HTTP/2, WebSocket, WebTransport and WebRTC**.
 It then packages them as a runnable WPT tree you can `wpt serve` /
 `wpt run` directly.
 
-Nothing here is LNA-specific: stock WPT tests, Chrome configured the way
-wptrunner configures it, no shims and no retargeting.
-
 ### WebSocket, WebTransport and WebRTC: covered, and how
 
 Not just HTTP. All three are checked, each in its own way:
@@ -33,7 +30,7 @@ Not just HTTP. All three are checked, each in its own way:
 | see where the tests are and how the manifest is laid out | [TREE.md](TREE.md) |
 | the list of emitting tests | `data/census.txt` (one URL per line) |
 | the same list split by protocol | `data/census-{http,websocket,webtransport,webrtc}.txt` |
-| per-test evidence | `data/census.json` |
+| per-test evidence | `data/census.json.gz` (gunzip -k it to get `data/census.json`; the raw file is ~260 MB) |
 | check one test yourself | `python -m netcensus verify <test>` |
 
 ## What counts as "emits network"
