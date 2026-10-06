@@ -4512,6 +4512,7 @@
 /css/css-contain/content-visibility/content-visibility-with-top-layer-in-auto-subtree-removal.html
 /css/css-contain/content-visibility/element-reassigned-to-skipped-slot.html
 /css/css-contain/content-visibility/element-reassigned-to-slot-in-skipped-subtree.html
+/css/css-contain/content-visibility/inheritance.html
 /css/css-contain/content-visibility/scrollIntoView-target-with-contents-hidden.html
 /css/css-contain/content-visibility/scrollIntoView-with-focus-target-with-contents-hidden.html
 /css/css-contain/content-visibility/slot-content-visibility-12-crash.html
