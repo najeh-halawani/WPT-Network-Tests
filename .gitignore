@@ -1,5 +1,5 @@
-# Generated runnable WPT tree: rebuild with `python -m netcensus subtree data/census.json`
-/wpt-network/
+# wpt-network/ is the committed runnable WPT tree of the runtime emitters (rebuild:
+# `python -m netcensus subtree data/census.json --out wpt-network --force`)
 __pycache__/
 # validation scratch runs
 /data/validate-*

@@ -143,7 +143,7 @@ network-tests/
 │   └── proc.py            process trees, ports; children die with the run
 ├── tests/                 unit tests (no browser, no server)
 ├── data/                  census output (see HOW-TO-RUN.md)
-└── wpt-network/           generated runnable WPT tree of emitting tests (gitignored)
+└── wpt-network/           runnable WPT tree of the 11,122 runtime emitters (committed)
 ```
 
 ## Requirements
