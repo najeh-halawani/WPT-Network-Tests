@@ -12,6 +12,21 @@ It then packages them as a runnable WPT tree you can `wpt serve` /
 Nothing here is LNA-specific: stock WPT tests, Chrome configured the way
 wptrunner configures it, no shims and no retargeting.
 
+### WebSocket, WebTransport and WebRTC: covered, and how
+
+Not just HTTP. All three are checked, each in its own way:
+
+* **WebSocket**: Chrome reports the handshake over DevTools (CDP). We count it
+  when the handshake was sent or the WebSocket server answered it (`101`).
+  We then compare our count with the WebSocket server's own handshake log.
+* **WebTransport**: `wpt serve` also runs an HTTP/3 server (aioquic). We
+  count it when Chrome reports the session as **established**, meaning the
+  QUIC handshake finished and the server accepted the session.
+* **WebRTC**: there is no server, because the two peers connect directly.
+  A small script in the page watches every `RTCPeerConnection`. We count it
+  when ICE reaches **connected**, meaning a real UDP/TCP packet went out and
+  an answer came back.
+
 | you want to… | read / run |
 |---|---|
 | run the tests | [HOW-TO-RUN.md](HOW-TO-RUN.md) |
@@ -68,9 +83,13 @@ shows nothing.
  (CDP, wptrunner     service worker is attached PAUSED, instrumented, resumed;
   flags)             wait for testharness to report, then 1.5 s more
         │                  │                       │                      │
+      HTTP(S), h2        WebSocket               WebTransport           WebRTC
         ▼                  ▼                       ▼                      ▼
   wptserve access log   WebSocket handshake    WebTransport session   WebRTC ICE
   (Referer-attributed)  sent / answered        established            connected
+                        (CDP event, checked    (CDP event; QUIC +     (in-page observer;
+                        against pywebsocket's  HTTP/3 CONNECT to      STUN round trip,
+                        own handshake log)     aioquic accepted)      peer to peer)
         └──────────────────┴───────────┬───────────┴──────────────────────┘
                                        ▼
                      classify:  runtime · static only · no network · attempted-not-served
