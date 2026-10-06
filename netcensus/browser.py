@@ -208,9 +208,12 @@ class Browser:
                 # 0 = Chrome picks a free port and writes it to the profile.
                 "--remote-debugging-port=0",
                 f"--user-data-dir={self.profile}", "about:blank"]
+        # Its own session: close() kills Chrome's process GROUP, and without
+        # one that group is ours -- the census, tee and run-full.sh died with
+        # the first recycled browser (macOS, ~1,500 tests in at -j 8).
         self.proc = subprocess.Popen(
             args, stdout=open(proc.tmpdir(f"netcensus_chrome_{slot}.log"), "w"),
-            stderr=subprocess.STDOUT, **proc.child_kwargs())
+            stderr=subprocess.STDOUT, **proc.child_kwargs(new_group=True))
         proc.bind_to_parent(self.proc)
         self.cdp = CDP(self._devtools_url())
         # SHARED WORKERS belong to the browser, not to the page that started

@@ -48,7 +48,13 @@ def kill_tree(proc) -> None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                            capture_output=True, check=False, timeout=20)
         else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            pgid = os.getpgid(proc.pid)
+            if pgid == os.getpgrp():
+                # Spawned without its own session: the group is OURS, and
+                # killpg would take this process and its shell down too.
+                proc.kill()
+            else:
+                os.killpg(pgid, signal.SIGKILL)
     except Exception:
         # Whatever went wrong, the caller still wants the process gone.
         try:
