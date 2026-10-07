@@ -118,7 +118,7 @@ protocol with no error anywhere.
 ## Layout
 
 ```
-network-tests/
+WPT-Network-Tests/
 ├── README.md              this file
 ├── HOW-TO-RUN.md          setup, wpt serve, wpt run, census, verify, large runs
 ├── TREE.md                test tree + manifest tree (generated: netcensus tree)
@@ -143,7 +143,7 @@ network-tests/
 │   └── proc.py            process trees, ports; children die with the run
 ├── tests/                 unit tests (no browser, no server)
 ├── data/                  census output (see HOW-TO-RUN.md)
-└── wpt-network/           runnable WPT tree of the 11,122 runtime emitters (committed)
+└── wpt-network/           runnable WPT tree of the 34,199 emitters, runtime + static (committed)
 ```
 
 ## Requirements

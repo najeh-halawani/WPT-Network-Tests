@@ -1,6 +1,6 @@
 # How to run
 
-Run every command from `network-tests/` unless it says otherwise. On **Git
+Run every command from the repository root (`WPT-Network-Tests/`) unless it says otherwise. On **Git
 Bash**, write test paths without a leading `/` (`xhr/send-redirect.htm`, not
 `/xhr/send-redirect.htm`). Git Bash rewrites a leading `/` into a Windows
 path.
@@ -66,7 +66,7 @@ yourself in a terminal you can leave open:
 
 ```powershell
 # PowerShell (Windows). Progress shows on screen AND goes to data\census.log
-cd D:\Radboud\WeSPO\Projects\LocalMessV2\wpt-lna-extractor\network-tests
+cd WPT-Network-Tests
 python -m netcensus census -j 12 --out data\census.json 2>&1 | Tee-Object -FilePath data\census.log
 ```
 ```sh
@@ -113,7 +113,7 @@ ssh session doesn't stop the run:
 
 ```sh
 screen -S census                 # detach: Ctrl-A then D;  re-attach: screen -r census
-cd ~/lna-v2/network-tests && ./run-full.sh
+cd WPT-Network-Tests && ./run-full.sh
 tail -f data/census.log          # from any other terminal
 ```
 
