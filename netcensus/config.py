@@ -49,6 +49,7 @@ def _default_chrome() -> str:
 class RunConfig:
     wpt: str = field(default_factory=_default_wpt)
     chrome: str = field(default_factory=_default_chrome)
+    firefox: str = None
     jobs: int = 8
     timeout: float = 20.0      # wait this long for testharness to report
     settle: float = 1.5        # then keep watching this long for late requests

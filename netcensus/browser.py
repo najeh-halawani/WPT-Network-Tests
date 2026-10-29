@@ -193,12 +193,12 @@ class Visit:
     rtc: list = field(default_factory=list)   # ICE-connected peers (_RTC_HOOK)
 
 
-class Browser:
+class Chrome:
     """Each worker owns its profile and its DevTools port.  A shared port does
     not fail: the second browser silently attaches to the first, and every
     worker's tests run as background tabs in one browser."""
 
-    def __init__(self, chrome: str, slot: int, wpt: str | None = None):
+    def __init__(self, chrome: str, slot: int, wpt: str | None = None, extension_path: str | None = None):
         self.slot = slot
         self.profile = proc.tmpdir(f"netcensus_profile_{slot}")
         shutil.rmtree(self.profile, ignore_errors=True)
@@ -216,6 +216,11 @@ class Browser:
             stderr=subprocess.STDOUT, **proc.child_kwargs(new_group=True))
         proc.bind_to_parent(self.proc)
         self.cdp = CDP(self._devtools_url())
+
+        if extension_path:
+            print(extension_path)
+            self.cdp.send("Extensions.loadUnpacked", {"path": extension_path})
+            print("Sucessfully Added Extension")
         # SHARED WORKERS belong to the browser, not to the page that started
         # them, so the page-level auto-attach below never reaches them: their
         # fetches still show up in the access log (Referer = the worker
@@ -256,7 +261,7 @@ class Browser:
         self.cdp.close()
         proc.kill_tree(self.proc)
 
-    def __enter__(self) -> "Browser":
+    def __enter__(self) -> "Chrome":
         return self
 
     def __exit__(self, *exc) -> None:
@@ -399,3 +404,13 @@ class Browser:
                 wt = reqs.get("wt:" + p.get("transportId", ""))
                 if wt is not None:
                     wt["established"] = True
+
+
+class Firefox:
+    def __init__(self, profile=None):
+        self.profile = profile
+        self._data = {}
+        self._reqs = {}
+    
+
+    

@@ -33,12 +33,13 @@ import time
 from dataclasses import dataclass
 
 from . import accesslog, manifest, proc
-from .browser import Browser, Visit
+from .browser import Chrome, Visit
 from .classify import PROTOCOLS, TestResult, classify
 from .config import RunConfig
 from .console import Console
 from .server import WptServe
-
+from .utils import get_correct_extension_path
+from .firefox import Firefox
 # A browser is replaced after this many tests.  Long-lived headless Chromes
 # accumulate service workers, storage and stray targets, and one of those
 # leaking into the next test's tab is a wrong row nobody would notice.
@@ -217,7 +218,7 @@ class Census:
                                 or not browser.cdp.alive:
                             if browser:
                                 browser.close()
-                            browser, used = Browser(self.cfg.chrome, slot, self.cfg.wpt), 0
+                            browser, used = Firefox(self.cfg.chrome, slot, self.cfg.wpt, extension_path=get_correct_extension_path("firefox", "Adguard")), 0
                         used += 1
                         record(self._one(browser, test, router))
             except Exception as exc:                       # pragma: no cover
@@ -246,7 +247,7 @@ class Census:
             sink.close()
         return negatives
 
-    def _one(self, browser: Browser, test: manifest.Test,
+    def _one(self, browser: Chrome, test: manifest.Test,
              router: accesslog.LogRouter) -> TestResult:
         key = router.open_test(test.url)
         try:
