@@ -24,6 +24,7 @@ what a test does.  The access-log paths make it cover cross-directory loads
 (a fetch/ test pulling /html/resources/...), which a per-directory rule alone
 would miss.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,10 +36,27 @@ import sys
 from . import manifest as man_mod
 from .console import Console
 
-INFRA_DIRS = ("tools", "resources", "common", "interfaces", "fonts", "images",
-              "media", ".well-known")
-SKIP_NAMES = {".git", "_venv3", "_venv", ".wptcache", "__pycache__",
-              "MANIFEST.json", "lna-retarget", ".tox", "node_modules"}
+INFRA_DIRS = (
+    "tools",
+    "resources",
+    "common",
+    "interfaces",
+    "fonts",
+    "images",
+    "media",
+    ".well-known",
+)
+SKIP_NAMES = {
+    ".git",
+    "_venv3",
+    "_venv",
+    ".wptcache",
+    "__pycache__",
+    "MANIFEST.json",
+    "lna-retarget",
+    ".tox",
+    "node_modules",
+}
 
 
 def _test_sources(man: dict) -> set:
@@ -79,24 +97,31 @@ def _logged_top_dirs(rows: list) -> set:
         for entry in r.get("logged", []):
             # "GET :8000/html/resources/x.js"
             path = entry.split(" ", 1)[-1]
-            path = path[path.find("/"):] if "/" in path else ""
+            path = path[path.find("/") :] if "/" in path else ""
             top = path.strip("/").split("/", 1)[0]
             if top:
                 dirs.add(top)
     return dirs
 
 
-def build(wpt: str, census_json: str, out: str, console: Console,
-          force: bool = False, manifest: bool = True,
-          include_static: bool = False) -> dict:
+def build(
+    wpt: str,
+    census_json: str,
+    out: str,
+    console: Console,
+    force: bool = False,
+    manifest: bool = True,
+    include_static: bool = False,
+) -> dict:
     """`include_static` also keeps tests whose only traffic is markup
     subresources / META dependencies (tier "static"); by default the tree
     holds the tests that emit at RUN time."""
     with open(census_json, encoding="utf-8") as fh:
         census = json.load(fh)
     rows = census["rows"]
-    emitted_urls = {r["url"] for r in rows
-                    if r.get("runtime") or (include_static and r["emitted"])}
+    emitted_urls = {
+        r["url"] for r in rows if r.get("runtime") or (include_static and r["emitted"])
+    }
     if not emitted_urls:
         raise SystemExit(f"{census_json} has no emitting tests -- nothing to build")
 
@@ -106,8 +131,9 @@ def build(wpt: str, census_json: str, out: str, console: Console,
     all_tests = _test_sources(man)
 
     top_dirs = {s.split("/", 1)[0] for s in keep_sources}
-    top_dirs |= {d for d in _logged_top_dirs(rows)
-                 if os.path.isdir(os.path.join(wpt, d))}
+    top_dirs |= {
+        d for d in _logged_top_dirs(rows) if os.path.isdir(os.path.join(wpt, d))
+    }
     infra_dirs = set(INFRA_DIRS) | _cli_dirs(wpt)
     top_dirs |= {d for d in infra_dirs if os.path.isdir(os.path.join(wpt, d))}
 
@@ -117,8 +143,10 @@ def build(wpt: str, census_json: str, out: str, console: Console,
         shutil.rmtree(out)
     os.makedirs(out)
 
-    console.header(f"subtree: {len(emitted_urls)} emitting test URL(s) from "
-                   f"{len(keep_sources)} source file(s)")
+    console.header(
+        f"subtree: {len(emitted_urls)} emitting test URL(s) from "
+        f"{len(keep_sources)} source file(s)"
+    )
     # 1. root files (wpt launcher, config, lint rules, ...)
     for name in sorted(os.listdir(wpt)):
         src = os.path.join(wpt, name)
@@ -136,7 +164,7 @@ def build(wpt: str, census_json: str, out: str, console: Console,
                 rel = f"{rel_root}/{f}"
                 is_test = rel in all_tests
                 if is_test and not infra and rel not in keep_sources:
-                    continue                     # a test that did not emit
+                    continue  # a test that did not emit
                 dst = os.path.join(out, rel)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(os.path.join(root, f), dst)
@@ -147,19 +175,30 @@ def build(wpt: str, census_json: str, out: str, console: Console,
         console.info(f"{top + '/':<32} copied")
 
     # the list the tree was built from travels with it
-    with open(os.path.join(out, "NETWORK-TESTS.txt"), "w", encoding="utf-8",
-              newline="\n") as fh:
+    with open(
+        os.path.join(out, "NETWORK-TESTS.txt"), "w", encoding="utf-8", newline="\n"
+    ) as fh:
         fh.writelines(u + "\n" for u in sorted(emitted_urls))
 
-    stats = {"test_urls": len(emitted_urls), "test_sources": copied_tests,
-             "support_files": copied_support, "dirs": sorted(top_dirs)}
-    console.info(f"{copied_tests} test source(s), {copied_support} support/infra file(s)")
+    stats = {
+        "test_urls": len(emitted_urls),
+        "test_sources": copied_tests,
+        "support_files": copied_support,
+        "dirs": sorted(top_dirs),
+    }
+    console.info(
+        f"{copied_tests} test source(s), {copied_support} support/infra file(s)"
+    )
 
     # 3. a manifest for exactly this tree
     if manifest:
         console.info("generating MANIFEST.json  (./wpt manifest)")
-        r = subprocess.run([sys.executable, "./wpt", "manifest", "--no-download"],
-                           cwd=out, capture_output=True, text=True)
+        r = subprocess.run(
+            [sys.executable, "./wpt", "manifest", "--no-download"],
+            cwd=out,
+            capture_output=True,
+            text=True,
+        )
         if r.returncode != 0:
             console.error("wpt manifest failed:\n" + (r.stderr or r.stdout)[-2000:])
             stats["manifest"] = False

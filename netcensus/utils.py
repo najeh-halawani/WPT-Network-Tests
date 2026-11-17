@@ -6,6 +6,7 @@ def get_correct_extension_path(browser, extension):
         - extension : str, file name of extension without file type
     """
     if not extension:
+        print("No extension provided, returning None")
         return None
     file_path = "firefox_extensions" if browser == "firefox" else "chrome_extensions"
     extension_type = "/"

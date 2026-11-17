@@ -1,5 +1,6 @@
 """Render the census as TREE.md: where the emitting tests live, and how the
 MANIFEST.json that indexes them is shaped."""
+
 from __future__ import annotations
 
 import collections
@@ -61,18 +62,28 @@ def load_census(paths: list[str]) -> dict:
             meta[k] = c.get(k, meta.get(k))
     rs = sorted(rows.values(), key=lambda r: r["url"])
     meta.update(
-        rows=rs, n_tests=len(rs),
+        rows=rs,
+        n_tests=len(rs),
         n_runtime=sum(1 for r in rs if r.get("runtime")),
         n_static_only=sum(1 for r in rs if r["emitted"] and not r.get("runtime")),
-        n_none=sum(1 for r in rs if not r["emitted"] and not r.get("cdp_only")
-                   and not r.get("error")),
+        n_none=sum(
+            1
+            for r in rs
+            if not r["emitted"] and not r.get("cdp_only") and not r.get("error")
+        ),
         n_cdp_only=sum(1 for r in rs if r.get("cdp_only")),
-        n_errors=sum(1 for r in rs if r.get("error")))
+        n_errors=sum(1 for r in rs if r.get("error")),
+    )
     return meta
 
 
-def render(census_json, subtree_manifest: str | None = None,
-           depth: int = 2, top_n: int = 0, wpt: str | None = None) -> str:
+def render(
+    census_json,
+    subtree_manifest: str | None = None,
+    depth: int = 2,
+    top_n: int = 0,
+    wpt: str | None = None,
+) -> str:
     paths = [census_json] if isinstance(census_json, str) else list(census_json)
     census = load_census(paths)
     rows = census["rows"]
@@ -137,8 +148,9 @@ def render(census_json, subtree_manifest: str | None = None,
         "",
         "```text",
     ]
-    tops = sorted(((k, v) for k, v in by_top.items() if v[1]),
-                  key=lambda kv: (-kv[1][1], kv[0]))
+    tops = sorted(
+        ((k, v) for k, v in by_top.items() if v[1]), key=lambda kv: (-kv[1][1], kv[0])
+    )
     if top_n:
         tops = tops[:top_n]
     w = max([len(k) for k, _ in tops] + [24]) + 4
@@ -148,9 +160,10 @@ def render(census_json, subtree_manifest: str | None = None,
         out.append(f"{'└──' if last else '├──'} {top + '/':<{w}}{b:>8}{c:>8}{a:>8}")
         if b < 25:
             continue
-        subs = sorted(((k, v) for k, v in by_sub.items()
-                       if k.startswith(top + "/") and v[1]),
-                      key=lambda kv: (-kv[1][1], kv[0]))[:8]
+        subs = sorted(
+            ((k, v) for k, v in by_sub.items() if k.startswith(top + "/") and v[1]),
+            key=lambda kv: (-kv[1][1], kv[0]),
+        )[:8]
         for j, (sk, (sa, sb, sc)) in enumerate(subs):
             bar = "    " if last else "│   "
             elbow = "└──" if j == len(subs) - 1 else "├──"
@@ -161,9 +174,15 @@ def render(census_json, subtree_manifest: str | None = None,
 
     zero = sorted(k for k, v in by_top.items() if not v[1])
     if zero:
-        out += [f"<details><summary>{len(zero)} directories with no runtime "
-                f"emitter</summary>", "",
-                ", ".join(f"`{z}`" for z in zero), "", "</details>", ""]
+        out += [
+            f"<details><summary>{len(zero)} directories with no runtime "
+            f"emitter</summary>",
+            "",
+            ", ".join(f"`{z}`" for z in zero),
+            "",
+            "</details>",
+            "",
+        ]
 
     out += ["## Manifest tree", "", MANIFEST_SHAPE]
     if wpt:
@@ -171,9 +190,13 @@ def render(census_json, subtree_manifest: str | None = None,
     if subtree_manifest and os.path.exists(subtree_manifest):
         with open(subtree_manifest, encoding="utf-8") as fh:
             m = json.load(fh)
-        out += ["The pruned tree's own `wpt-network/MANIFEST.json` "
-                "(source files per type):", "",
-                "| type | source files |", "|---|---:|"]
+        out += [
+            "The pruned tree's own `wpt-network/MANIFEST.json` "
+            "(source files per type):",
+            "",
+            "| type | source files |",
+            "|---|---:|",
+        ]
         for kind, tree in sorted(m.get("items", {}).items()):
             out.append(f"| {kind} | {_count_leaves(tree)} |")
         out.append("")
@@ -185,6 +208,7 @@ def manifest_overview(wpt: str, top: int = 25) -> str:
     type, overall and for the largest directories.  Needs no census."""
     from . import manifest as man_mod
     from .config import RUNNABLE_TYPES
+
     man = man_mod.load(wpt)
     tests = man_mod.tests(man, RUNNABLE_TYPES)
     by_dir: dict = collections.defaultdict(collections.Counter)
@@ -200,12 +224,16 @@ def manifest_overview(wpt: str, top: int = 25) -> str:
         "",
         "| directory | " + " | ".join(cols) + " | total |",
         "|---|" + "---:|" * (len(cols) + 1),
-        "| **all** | " + " | ".join(str(total[c]) for c in cols)
+        "| **all** | "
+        + " | ".join(str(total[c]) for c in cols)
         + f" | **{len(tests)}** |",
     ]
     for d, cnt in sorted(by_dir.items(), key=lambda kv: -sum(kv[1].values()))[:top]:
-        out.append(f"| `{d}/` | " + " | ".join(str(cnt[c]) for c in cols)
-                   + f" | {sum(cnt.values())} |")
+        out.append(
+            f"| `{d}/` | "
+            + " | ".join(str(cnt[c]) for c in cols)
+            + f" | {sum(cnt.values())} |"
+        )
     out += ["", f"({len(by_dir) - top} smaller directories not shown.)", ""]
     return "\n".join(out) + "\n"
 

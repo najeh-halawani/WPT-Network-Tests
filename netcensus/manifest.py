@@ -1,4 +1,5 @@
 """The test list, read from WPT's own MANIFEST.json."""
+
 from __future__ import annotations
 
 import json
@@ -11,8 +12,8 @@ from .config import EXCLUDE_PREFIXES, HTTP_ORIGIN, HTTPS_ORIGIN
 
 @dataclass(frozen=True)
 class Test:
-    url: str          # e.g. /fetch/api/basic/request-head.any.html
-    type: str         # testharness | reftest | ...
+    url: str  # e.g. /fetch/api/basic/request-head.any.html
+    type: str  # testharness | reftest | ...
     # Helper scripts the test DECLARES (`// META: script=...`), as absolute
     # paths.  Loading them is part of loading the test, like testharness.js.
     deps: tuple = field(default=(), compare=False)
@@ -50,8 +51,11 @@ def _deps(url: str, extras) -> tuple:
     for item in extras.get("script_metadata") or []:
         if len(item) == 2 and item[0] == "script":
             dep = item[1].split("?", 1)[0]
-            out.append(dep if dep.startswith("/")
-                       else posixpath.normpath(posixpath.join(base, dep)))
+            out.append(
+                dep
+                if dep.startswith("/")
+                else posixpath.normpath(posixpath.join(base, dep))
+            )
     return tuple(out)
 
 

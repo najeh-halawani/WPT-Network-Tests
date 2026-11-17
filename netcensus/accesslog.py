@@ -32,6 +32,7 @@ The noise list is deliberately SHORT and NAMED.  Anything broader (say, "all of
 /resources/") would swallow real subresource loads -- /resources/ also holds
 the images, media and handlers that tests fetch on purpose.
 """
+
 from __future__ import annotations
 
 import collections
@@ -46,43 +47,49 @@ import time
 RESP_RE = re.compile(
     r"^\[[^\]]*?on port (?P<port>\d+)\]\s+DEBUG\s+-\s+"
     r"(?P<status>\d{3})\s+(?P<method>[A-Z]+)\s+(?P<path>\S+)\s+"
-    r"\((?P<referer>.*)\)\s+(?P<length>\d+)\s*$")
+    r"\((?P<referer>.*)\)\s+(?P<length>\d+)\s*$"
+)
 REQ_RE = re.compile(
     r"^\[[^\]]*?on port (?P<port>\d+)\]\s+DEBUG\s+-\s+"
     r"(?P<method>GET|POST|HEAD|PUT|DELETE|PATCH|OPTIONS|CONNECT)\s+"
-    r"(?P<path>/\S*)\s*$")
+    r"(?P<path>/\S*)\s*$"
+)
 # wptserve aliases some paths and logs the TARGET, not what the browser asked
 # for (wptserve/server.py:128).  Undo it, or an ordinary helper load looks like
 # a request for a file that appears in no page.  Every idlharness test hits it.
 REWRITE_RE = re.compile(
     r"^\[[^\]]*?on port \d+\]\s+DEBUG\s+-\s+"
-    r"Rewriting request path (?P<src>\S+) to (?P<dst>\S+)\s*$")
+    r"Rewriting request path (?P<src>\S+) to (?P<dst>\S+)\s*$"
+)
 # pywebsocket (the ws/wss servers) logs a handshake without its path, Origin
 # or Referer, so it cannot be attributed to a test.  It is COUNTED instead:
 # "Protocol version is ..." is written exactly once per accepted handshake,
 # and the run checks that total against the handshakes it credited to tests.
 WS_HANDSHAKE_RE = re.compile(
-    r"^\[[^\]]*?\bwss? on port \d+\]\s+DEBUG\s+-\s+Protocol version is ")
+    r"^\[[^\]]*?\bwss? on port \d+\]\s+DEBUG\s+-\s+Protocol version is "
+)
 
 
 # ---------------------------------------------------------------- the noise ---
 # Loaded by the harness for every single test, named one by one.  A path is
 # noise only if it is in here or is the test document itself.
-HARNESS_PATHS = frozenset({
-    "/resources/testharness.js",
-    "/resources/testharnessreport.js",
-    "/resources/testharness.css",
-    "/resources/testdriver.js",
-    "/resources/testdriver-vendor.js",
-    "/resources/testdriver-actions.js",
-    "/resources/idlharness.js",
-    "/resources/idlharness-shadowrealm.js",
-    "/resources/WebIDLParser.js",
-    "/resources/webidl2/lib/webidl2.js",      # the alias target of the above
-    "/resources/check-layout-th.js",
-    "/resources/declarative-shadow-dom-polyfill.js",
-    "/favicon.ico",
-})
+HARNESS_PATHS = frozenset(
+    {
+        "/resources/testharness.js",
+        "/resources/testharnessreport.js",
+        "/resources/testharness.css",
+        "/resources/testdriver.js",
+        "/resources/testdriver-vendor.js",
+        "/resources/testdriver-actions.js",
+        "/resources/idlharness.js",
+        "/resources/idlharness-shadowrealm.js",
+        "/resources/WebIDLParser.js",
+        "/resources/webidl2/lib/webidl2.js",  # the alias target of the above
+        "/resources/check-layout-th.js",
+        "/resources/declarative-shadow-dom-polyfill.js",
+        "/favicon.ico",
+    }
+)
 # Prefixes that are harness plumbing rather than a test's own traffic.
 HARNESS_PREFIXES = (
     "/resources/testdriver",
@@ -118,7 +125,7 @@ class OwnDocs:
         self.exact = frozenset({test_url, path})
         d, _, base = path.rpartition("/")
         cuts = [base.find(m) for m in _WRAPPER_MARKERS if base.find(m) > 0]
-        self.stem = f"{d}/{base[:min(cuts)]}." if cuts else None
+        self.stem = f"{d}/{base[: min(cuts)]}." if cuts else None
 
     def __contains__(self, path: str) -> bool:
         bare = strip_query(path)
@@ -126,9 +133,12 @@ class OwnDocs:
             return True
         if self.stem is None or not bare.startswith(self.stem):
             return False
-        rest = bare[len(self.stem) - 1:]          # keeps the leading "."
-        return ("/" not in rest and rest.endswith((".js", ".html"))
-                and any(rest.startswith(m) for m in _WRAPPER_MARKERS))
+        rest = bare[len(self.stem) - 1 :]  # keeps the leading "."
+        return (
+            "/" not in rest
+            and rest.endswith((".js", ".html"))
+            and any(rest.startswith(m) for m in _WRAPPER_MARKERS)
+        )
 
     @property
     def group(self) -> str:
@@ -198,20 +208,19 @@ class LogRouter:
     reported as an unanswered orphan rather than silently dropped.
     """
 
-    def __init__(self, path: str, poll: float = 0.25,
-                 unanswered_after: float = 30.0):
+    def __init__(self, path: str, poll: float = 0.25, unanswered_after: float = 30.0):
         self.path = path
         self.poll = poll
         self.unanswered_after = unanswered_after
         self._pending: dict[tuple, list] = {}  # (port, method, path) -> FIFO
         self.pos = 0
         self._lock = threading.Lock()
-        self._bins: dict[str, tuple] = {}      # test path -> (OwnDocs, records)
+        self._bins: dict[str, tuple] = {}  # test path -> (OwnDocs, records)
         # Bounded: a whole-tree run produces orphans by the hundred thousand,
         # and only the count is needed run-wide.  `orphan_total` is exact.
         self._orphans: collections.deque = collections.deque(maxlen=50000)
         self.orphan_total = 0
-        self.ws_handshakes = 0                 # counted, see WS_HANDSHAKE_RE
+        self.ws_handshakes = 0  # counted, see WS_HANDSHAKE_RE
         self._aliases: dict[str, str] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -260,7 +269,7 @@ class LogRouter:
         seconds (all still-pending ones when `flush_pending`).
         """
         self._drain()
-        cutoff = float("inf") if flush_pending else             time.time() - self.unanswered_after
+        cutoff = float("inf") if flush_pending else time.time() - self.unanswered_after
         with self._lock:
             for k in list(self._pending):
                 keep = [r for r in self._pending[k] if r["t"] > cutoff]
@@ -310,23 +319,35 @@ class LogRouter:
                 path = self._aliases.get(m.group("path"), m.group("path"))
                 ref = clean_referer(m.group("referer"))
                 self._answer((int(m.group("port")), m.group("method"), path))
-                self._file({"port": int(m.group("port")),
-                            "method": m.group("method"),
-                            "path": path,
-                            "referer": ref,
-                            "status": int(m.group("status")),
-                            "length": int(m.group("length")),
-                            "t": now})
+                self._file(
+                    {
+                        "port": int(m.group("port")),
+                        "method": m.group("method"),
+                        "path": path,
+                        "referer": ref,
+                        "status": int(m.group("status")),
+                        "length": int(m.group("length")),
+                        "t": now,
+                    }
+                )
                 continue
             q = REQ_RE.match(line)
             if q:
                 path = self._aliases.get(q.group("path"), q.group("path"))
-                rec = {"port": int(q.group("port")), "method": q.group("method"),
-                       "path": path, "referer": "", "status": None,
-                       "length": 0, "t": now, "unanswered": True}
+                rec = {
+                    "port": int(q.group("port")),
+                    "method": q.group("method"),
+                    "path": path,
+                    "referer": "",
+                    "status": None,
+                    "length": 0,
+                    "t": now,
+                    "unanswered": True,
+                }
                 with self._lock:
                     self._pending.setdefault(
-                        (rec["port"], rec["method"], path), []).append(rec)
+                        (rec["port"], rec["method"], path), []
+                    ).append(rec)
 
     def _answer(self, key: tuple) -> None:
         """Retire the oldest pending request line this response answers."""
@@ -345,9 +366,11 @@ class LogRouter:
                 # test owns it (and it is noise).  Otherwise -- a
                 # browser-process fetch, say -- nothing in the line names the
                 # test that caused it.
-                nav = [b for own, b in self._bins.values()
-                       if rec["path"] in own.exact
-                       or strip_query(rec["path"]) in own.exact]
+                nav = [
+                    b
+                    for own, b in self._bins.values()
+                    if rec["path"] in own.exact or strip_query(rec["path"]) in own.exact
+                ]
                 if len(nav) == 1:
                     nav[0].append(rec)
                 else:
@@ -367,7 +390,7 @@ class LogRouter:
                 # A nested frame's own subresource, or an ambiguous claim.
                 self._orphan(rec)
 
-    def _orphan(self, rec: dict) -> None:       # caller holds the lock
+    def _orphan(self, rec: dict) -> None:  # caller holds the lock
         self._orphans.append(rec)
         self.orphan_total += 1
 

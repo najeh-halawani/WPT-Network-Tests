@@ -8,6 +8,7 @@ identically and logs nothing this kit can read.
 (tools/wptrunner/wptrunner/environment.py, get_server_logger), so the access
 lines are filtered out before they reach any log.
 """
+
 from __future__ import annotations
 
 import ast
@@ -108,8 +109,12 @@ def preflight(log_path: str) -> dict[str, bool]:
     ports = server_ports(log_path)
     first = lambda k: next((p for p in ports.get(k, []) if isinstance(p, int)), None)
     up = {"http": is_serving()}
-    for name, key in (("https", "https"), ("websocket", "ws"),
-                      ("websocket-tls", "wss"), ("h2", "h2")):
+    for name, key in (
+        ("https", "https"),
+        ("websocket", "ws"),
+        ("websocket-tls", "wss"),
+        ("h2", "h2"),
+    ):
         p = first(key)
         up[name] = bool(p) and _tcp_open(p)
     wt = first("webtransport-h3")
@@ -152,7 +157,8 @@ class WptServe:
         raise ServeError(
             f"ports held by another process: {owners}.  A census started now "
             f"would score every test a false negative, so it is refused.  "
-            f"Stop that process (or run `wpt serve` elsewhere) and retry.")
+            f"Stop that process (or run `wpt serve` elsewhere) and retry."
+        )
 
     def __enter__(self) -> "WptServe":
         self.start()
@@ -166,11 +172,22 @@ class WptServe:
         # --webtransport-h3: the HTTP/3 server is OPT-IN in `wpt serve`
         # (tools/serve/serve.py skips it otherwise, silently); wptrunner turns
         # it on for Chrome, and so does this.
-        argv = [sys.executable, "./wpt", "serve", "--config", SERVE_CONFIG,
-                "--verbose", "--webtransport-h3"]
+        argv = [
+            sys.executable,
+            "./wpt",
+            "serve",
+            "--config",
+            SERVE_CONFIG,
+            "--verbose",
+            "--webtransport-h3",
+        ]
         self.proc = subprocess.Popen(
-            argv, cwd=self.wpt, stdout=open(self.log_path, "w"),
-            stderr=subprocess.STDOUT, **proc.child_kwargs(new_group=True))
+            argv,
+            cwd=self.wpt,
+            stdout=open(self.log_path, "w"),
+            stderr=subprocess.STDOUT,
+            **proc.child_kwargs(new_group=True),
+        )
         proc.bind_to_parent(self.proc)
         _remember_server(self.proc.pid)
         deadline = time.time() + wait
@@ -196,14 +213,17 @@ class WptServe:
             time.sleep(1)
         if down and self.require_all:
             self.stop()
-            hints = "\n".join(f"  {d:<14} {FIX_HINT.get(d.split('-')[0], 'see the serve log')}"
-                              for d in down)
+            hints = "\n".join(
+                f"  {d:<14} {FIX_HINT.get(d.split('-')[0], 'see the serve log')}"
+                for d in down
+            )
             raise ServeError(
                 f"wpt serve is up, but these protocol servers are NOT:\n{hints}\n"
-                f"Every test on those protocols would score \"no network\", so "
+                f'Every test on those protocols would score "no network", so '
                 f"the run is refused.  Fix them, or pass --allow-missing-servers "
                 f"to run anyway (the gap is then recorded in the results).\n"
-                f"serve log: {self.log_path}")
+                f"serve log: {self.log_path}"
+            )
 
     def stop(self) -> None:
         if not self.proc:
@@ -250,8 +270,12 @@ def _forget_server() -> None:
 def _group_members(pgid: int) -> list[tuple[int, str]]:
     """(pid, command) of every live process in a POSIX process group."""
     try:
-        out = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,command="],
-                             capture_output=True, text=True, timeout=20).stdout
+        out = subprocess.run(
+            ["ps", "-A", "-o", "pid=,pgid=,command="],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        ).stdout
     except Exception:
         return []
     members = []
@@ -276,8 +300,9 @@ def _reap_previous_server() -> None:
         # A group id can be reused once its group is gone.  Kill only if every
         # member is still recognisably wpt serve (its python, or a
         # multiprocessing worker of it); otherwise leave it alone.
-        ours = members and all(("wpt" in cmd or "multiprocessing" in cmd)
-                               for _, cmd in members)
+        ours = members and all(
+            ("wpt" in cmd or "multiprocessing" in cmd) for _, cmd in members
+        )
         if ours:
             try:
                 os.killpg(old, signal.SIGKILL)
