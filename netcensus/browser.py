@@ -214,7 +214,7 @@ class Chrome:
         extension_path=None,
         add_cust_rule=False,
         template_mode=False,
-        headless=False,
+        headless=True,
     ):
         self.slot = slot
         self.extension_id = None
@@ -251,6 +251,7 @@ class Chrome:
         proc.bind_to_parent(self.proc)
         self.cdp = CDP(self._devtools_url())
         self.extension_path = extension_path
+        print(extension_path)
         if extension_path:
             self.extension_settings = ExtensionSettings(
                 ext=extension_path.split("/")[-2], ext_dir=extension_path
@@ -259,7 +260,7 @@ class Chrome:
             if self.add_cust_rule:
                 self.extension_settings.add_test_rule()
             print("Loaded Extension: ", self.extension_settings.ext)
-        self.cdp.send("Extensions.loadUnpacked", {"path": extension_path})
+            self.cdp.send("Extensions.loadUnpacked", {"path": extension_path})
         # SHARED WORKERS belong to the browser, not to the page that started
         # them, so the page-level auto-attach below never reaches them: their
         # fetches still show up in the access log (Referer = the worker
