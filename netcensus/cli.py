@@ -17,7 +17,7 @@ def _run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--browser", default=d.browser, help="Browser binary")
     p.add_argument("--extension", default=d.extension, help="Extension to load")
     p.add_argument(
-        "--add_cust_rule",
+        "--add-cust-rule",
         action="store_true",
         default=d.add_cust_rule,
         help="Turn on custom rule for extension",

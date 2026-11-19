@@ -121,7 +121,7 @@ class Census:
         )
         c.info(f"wpt     {self.cfg.wpt}")
         c.info(f"browser  {self.cfg.browser}")
-        c.info(f"extension  {' '.join(word for word in self.cfg.extension.split('_'))}")
+        c.info(f"extension  {' '.join(word for word in self.cfg.extension.split('_')) if self.cfg.extension else "✖"}")
         c.info(f"custom rule  {'✔' if self.cfg.add_cust_rule else '✖'}")
 
         log_path = proc.tmpdir("netcensus_wptserve_access.log")
