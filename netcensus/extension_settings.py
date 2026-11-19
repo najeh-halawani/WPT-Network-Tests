@@ -4,7 +4,7 @@ import tempfile
 
 
 STRICT_TYPES = [
-    # "main_frame",
+    "main_frame",
     "sub_frame",
     "stylesheet",
     "script",
@@ -36,14 +36,20 @@ class ExtensionSettings(object):
         urls: list[str] = WPT_URLS,
     ):
         self.main_rule = [
-            {
-                "id": 19,
-                "priority": 2000,
-                "urlFilter": urls,
-                "action": {"type": "block"},
-                "condition": {"resourceTypes": STRICT_TYPES, "urlFilter": urls},
-            }
-        ]
+        {
+            "id": 19,
+            "priority": 2000,
+            "action": {"type": "block"},
+            "condition": {
+                "initiatorDomains": [
+                    "web-platform.test",
+                    "not-web-platform.test",
+                ],
+                "resourceTypes": STRICT_TYPES,
+            },
+        }
+    ]
+
         self.ext_dir = os.path.abspath(ext_dir)
         self.ext = ext
         print("Extension = ", self.ext)
@@ -86,7 +92,7 @@ class ExtensionSettings(object):
         manifest_rule = {
             "id": "test_rule",
             "enabled": True,
-            "path": f"/{self.rule_file}",
+            "path": f"{self.rule_file}",
         }
         if (
             manifest_rule not in manifest["declarative_net_request"]["rule_resources"]
