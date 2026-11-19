@@ -10,4 +10,5 @@ own request census (CDP) is recorded alongside as a second, independent view.
     python -m netcensus subtree data/census.json --out tree/
     python -m netcensus tree data/census.json > TREE.md
 """
+
 __version__ = "1.0.0"

@@ -1,4 +1,5 @@
 """Every path, port and default the kit depends on, stated once."""
+
 from __future__ import annotations
 
 import os
@@ -12,8 +13,7 @@ DATA_DIR = os.path.join(KIT, "data")
 
 # Ports wptserve binds with wpt_serve_config.json.  All of them must be free
 # before a run: one held by a dead previous server takes the whole server down.
-REQUIRED_PORTS = (8000, 8001, 8002, 8010, 8443, 8444, 8445, 8446,
-                  8888, 8889, 9000)
+REQUIRED_PORTS = (8000, 8001, 8002, 8010, 8443, 8444, 8445, 8446, 8888, 8889, 9000)
 HTTP_ORIGIN = "http://web-platform.test:8000"
 HTTPS_ORIGIN = "https://web-platform.test:8443"
 
@@ -32,14 +32,17 @@ def _default_wpt() -> str:
     return os.environ.get("WPT_ROOT", os.path.join(PROJECT, "wpt"))
 
 
-def _default_chrome() -> str:
+def _default_browser() -> str:
     if os.environ.get("WPT_CHROME"):
         return os.environ["WPT_CHROME"]
     win = os.path.join(PROJECT, "browsers", "chrome-win64", "chrome.exe")
     if os.path.exists(win):
         return win
-    for p in ("/usr/bin/google-chrome", "/usr/bin/chromium",
-              "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"):
+    for p in (
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ):
         if os.path.exists(p):
             return p
     return win
@@ -48,14 +51,16 @@ def _default_chrome() -> str:
 @dataclass
 class RunConfig:
     wpt: str = field(default_factory=_default_wpt)
-    chrome: str = field(default_factory=_default_chrome)
+    browser: str = field(default_factory=_default_browser)
+    extension: str = None
+    add_cust_rule: bool = False
     jobs: int = 8
-    timeout: float = 20.0      # wait this long for testharness to report
-    settle: float = 1.5        # then keep watching this long for late requests
+    timeout: float = 20.0  # wait this long for testharness to report
+    settle: float = 1.5  # then keep watching this long for late requests
     types: tuple = RUNNABLE_TYPES
     filter: str = ""
     limit: int = 0
-    require_all_servers: bool = True   # refuse to run with a protocol server down
+    require_all_servers: bool = True  # refuse to run with a protocol server down
     # After the parallel pass, re-run serially the tests under these prefixes
     # that showed no runtime evidence (WebRTC is timing-bound under load).
     serial_recheck: str = "webrtc"

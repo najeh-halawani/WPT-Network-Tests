@@ -10,6 +10,7 @@ attribute -- and prints each line under the label that decided it:
     noise    the test document or harness boilerplate           (grey)
     other    logged during the run with no attributable referer (yellow)
 """
+
 from __future__ import annotations
 
 from . import accesslog, manifest, proc
@@ -32,8 +33,9 @@ def _resolve(man: dict, cfg: RunConfig, arg: str) -> list[manifest.Test]:
     return [t for t in every if t.url.startswith(stem)]
 
 
-def run(cfg: RunConfig, targets: list[str], console: Console,
-        show_noise: bool = True) -> int:
+def run(
+    cfg: RunConfig, targets: list[str], console: Console, show_noise: bool = True
+) -> int:
     man = manifest.load(cfg.wpt)
     tests: list[manifest.Test] = []
     for a in targets:
@@ -54,7 +56,7 @@ def run(cfg: RunConfig, targets: list[str], console: Console,
         try:
             with Browser(cfg.chrome, slot=0, wpt=cfg.wpt) as b:
                 for i, t in enumerate(tests, 1):
-                    router.orphans()                 # discard pre-test lines
+                    router.orphans()  # discard pre-test lines
                     ws_before = router.ws_handshakes
                     key = router.open_test(t.url)
                     try:
@@ -75,41 +77,51 @@ def run(cfg: RunConfig, targets: list[str], console: Console,
                         ws_gap.append((t.url, ws_server, result.n_ws))
                         console.line(
                             f"        ⚠ ws server logged {ws_server} handshake(s), "
-                            f"{result.n_ws} credited", "yellow", "bold")
+                            f"{result.n_ws} credited",
+                            "yellow",
+                            "bold",
+                        )
         finally:
             router.stop()
     console.info(f"{emitted}/{len(tests)} emit network requests at runtime")
     if ws_gap:
-        console.warn(f"{len(ws_gap)} test(s) where the ws server saw handshakes "
-                     f"the census did not credit:")
+        console.warn(
+            f"{len(ws_gap)} test(s) where the ws server saw handshakes "
+            f"the census did not credit:"
+        )
         for url, srv, got in ws_gap:
             console.line(f"    {url}   server={srv} credited={got}", "yellow")
     return 0
 
 
-def _evidence(c: Console, t: manifest.Test, result, logged: list,
-              other: list, show_noise: bool) -> None:
+def _evidence(
+    c: Console, t: manifest.Test, result, logged: list, other: list, show_noise: bool
+) -> None:
     own_paths = accesslog.self_paths(t.url)
     runtime = set(result.runtime_requests)
-    for r in sorted(accesslog.dedup(logged),
-                    key=lambda r: (accesslog.is_noise(r["path"], own_paths),
-                                   r["path"])):
+    for r in sorted(
+        accesslog.dedup(logged),
+        key=lambda r: (accesslog.is_noise(r["path"], own_paths), r["path"]),
+    ):
         noise = accesslog.is_noise(r["path"], own_paths)
         if noise and not show_noise:
             continue
         if noise:
             tag, style = "noise  ", "grey"
-        elif f'{r["method"]} :{r["port"]}{r["path"]}' in runtime:
+        elif f"{r['method']} :{r['port']}{r['path']}" in runtime:
             tag, style = "runtime", "green"
         else:
             tag, style = "static ", "cyan"
         status = r["status"] if r["status"] is not None else "---"
-        c.line(f"        {tag}  {status}  {r['method']:<7} "
-               f":{r['port']}{r['path']}", style)
+        c.line(
+            f"        {tag}  {status}  {r['method']:<7} :{r['port']}{r['path']}", style
+        )
     # WebSocket / WebTransport / WebRTC evidence is not an access-log line.
-    how = {"WS ": "handshake reached the ws server",
-           "WT ": "session established with the h3 server",
-           "RTC ": "ICE connected: STUN round trip on the wire"}
+    how = {
+        "WS ": "handshake reached the ws server",
+        "WT ": "session established with the h3 server",
+        "RTC ": "ICE connected: STUN round trip on the wire",
+    }
     for label in result.runtime_requests:
         for prefix, why in how.items():
             if label.startswith(prefix):
@@ -120,5 +132,8 @@ def _evidence(c: Console, t: manifest.Test, result, logged: list,
             continue
         status = r["status"] if r["status"] is not None else "---"
         ref = r["referer"] or "no referer"
-        c.line(f"        other    {status}  {r['method']:<7} "
-                        f":{r['port']}{r['path']}  ({ref})", "yellow")
+        c.line(
+            f"        other    {status}  {r['method']:<7} "
+            f":{r['port']}{r['path']}  ({ref})",
+            "yellow",
+        )

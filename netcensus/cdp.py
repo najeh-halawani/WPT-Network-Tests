@@ -1,4 +1,5 @@
 """A minimal Chrome DevTools Protocol client: one socket, flat sessions."""
+
 from __future__ import annotations
 
 import collections
@@ -27,7 +28,7 @@ class CDP:
         self._id = 0
         self._send_lock = threading.Lock()
         self._replies: dict[int, dict] = {}
-        self._discard: set = set()           # ids sent with post()
+        self._discard: set = set()  # ids sent with post()
         self._events: collections.deque = collections.deque(maxlen=max_events)
         self._cv = threading.Condition()
         self._alive = True
@@ -57,8 +58,13 @@ class CDP:
     def alive(self) -> bool:
         return self._alive
 
-    def send(self, method: str, params: dict | None = None,
-             session: str | None = None, timeout: float = 30) -> dict:
+    def send(
+        self,
+        method: str,
+        params: dict | None = None,
+        session: str | None = None,
+        timeout: float = 30,
+    ) -> dict:
         # id allocation and the write are one critical section: interleaved
         # frames from two threads would corrupt the stream.
         with self._send_lock:
@@ -82,8 +88,9 @@ class CDP:
             raise CDPError(f"{method}: {reply['error']}")
         return reply.get("result", {})
 
-    def post(self, method: str, params: dict | None = None,
-             session: str | None = None) -> None:
+    def post(
+        self, method: str, params: dict | None = None, session: str | None = None
+    ) -> None:
         """Send without waiting for the reply (it is discarded when it comes).
 
         For setup sent to a target that may be PAUSED: a paused worker answers
@@ -103,8 +110,13 @@ class CDP:
             except Exception:
                 pass
 
-    def try_send(self, method: str, params: dict | None = None,
-                 session: str | None = None, timeout: float = 8) -> dict | None:
+    def try_send(
+        self,
+        method: str,
+        params: dict | None = None,
+        session: str | None = None,
+        timeout: float = 8,
+    ) -> dict | None:
         try:
             return self.send(method, params, session, timeout)
         except (CDPError, TimeoutError):

@@ -1,4 +1,5 @@
 """Headless Chrome with STOCK flags, driven over CDP, one per worker."""
+
 from __future__ import annotations
 
 import json
@@ -10,9 +11,11 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+import tempfile
 
 from . import proc
 from .cdp import CDP
+from .extension_settings import ExtensionSettings
 
 # Injected into every document before any script runs.  It sets
 # window.__netcensusDone when the test is finished, by the test's OWN signal:
@@ -133,8 +136,11 @@ _RTC_HOOK = r"""
 """
 
 CHROME_FLAGS = (
-    "--headless=new", "--no-sandbox", "--disable-gpu",
-    "--no-first-run", "--no-default-browser-check",
+    "--headless=new",
+    "--no-sandbox",
+    "--disable-gpu",
+    "--no-first-run",
+    "--no-default-browser-check",
     "--disable-search-engine-choice-screen",
     "--disable-backgrounding-occluded-windows",
     # wptserve's certificate is self-signed; wptrunner passes the same flag.
@@ -154,12 +160,13 @@ CHROME_FLAGS = (
     # -- the rest mirror tools/wptrunner/wptrunner/browsers/chrome.py --------
     # Each one decides whether a family of tests gets far enough to touch the
     # network at all; without it the test bails and reads as "no network".
-    "--webtransport-developer-mode",          # WebTransport to the local h3 server
-    "--use-fake-device-for-media-stream",     # getUserMedia -> WebRTC tests
+    "--webtransport-developer-mode",  # WebTransport to the local h3 server
+    "--use-fake-device-for-media-stream",  # getUserMedia -> WebRTC tests
     "--use-fake-ui-for-media-stream",
     "--autoplay-policy=no-user-gesture-required",
-    "--use-fake-ui-for-fedcm",                # FedCM fetches its IdP config
-    "--short-reporting-delay",                # Reporting API sends within settle
+    "--use-fake-ui-for-fedcm",  # FedCM fetches its IdP config
+    "--short-reporting-delay",  # Reporting API sends within settle
+    "--disable-component-update",
 )
 
 
@@ -172,8 +179,9 @@ def spki_flag(wpt: str) -> str | None:
     (generated there by `wpt regen-certs`), exactly the list wptrunner passes,
     so they always match the certificate this server actually presents.
     """
-    path = os.path.join(wpt, "tools", "wptrunner", "wptrunner", "browsers",
-                        "chrome_spki_certs.py")
+    path = os.path.join(
+        wpt, "tools", "wptrunner", "wptrunner", "browsers", "chrome_spki_certs.py"
+    )
     try:
         with open(path, encoding="utf-8") as fh:
             src = fh.read()
@@ -189,33 +197,70 @@ class Visit:
     targets: int = 0
     requests: list = field(default_factory=list)
     error: str | None = None
-    seconds: float = 0.0       # navigate -> harness reported (excl. settle)
-    rtc: list = field(default_factory=list)   # ICE-connected peers (_RTC_HOOK)
+    seconds: float = 0.0  # navigate -> harness reported (excl. settle)
+    rtc: list = field(default_factory=list)  # ICE-connected peers (_RTC_HOOK)
 
 
-class Browser:
+class Chrome:
     """Each worker owns its profile and its DevTools port.  A shared port does
     not fail: the second browser silently attaches to the first, and every
     worker's tests run as background tabs in one browser."""
 
-    def __init__(self, chrome: str, slot: int, wpt: str | None = None):
+    def __init__(
+        self,
+        chrome,
+        slot,
+        wpt=None,
+        extension_path=None,
+        add_cust_rule=False,
+        template_mode=False,
+        headless=True,
+    ):
+        self.slot = slot
+        self.extension_id = None
+        self.add_cust_rule = add_cust_rule
+        self.profile = proc.tmpdir(f"netcensus_profile_{slot}")
+        self.extension_path = extension_path
+        shutil.rmtree(self.profile, ignore_errors=True)
+        os.makedirs(self.profile, exist_ok=True)
+        flags = [f for f in CHROME_FLAGS if headless or not f.startswith("--headless")]
+        args = [chrome, *flags, ...]
         self.slot = slot
         self.profile = proc.tmpdir(f"netcensus_profile_{slot}")
         shutil.rmtree(self.profile, ignore_errors=True)
         os.makedirs(self.profile, exist_ok=True)
         spki = spki_flag(wpt) if wpt else None
-        args = [chrome, *CHROME_FLAGS, *([spki] if spki else []),
-                # 0 = Chrome picks a free port and writes it to the profile.
-                "--remote-debugging-port=0",
-                f"--user-data-dir={self.profile}", "about:blank"]
+        args = [
+            chrome,
+            *CHROME_FLAGS,
+            *([spki] if spki else []),
+            # 0 = Chrome picks a free port and writes it to the profile.
+            "--remote-debugging-port=0",
+            f"--user-data-dir={self.profile}",
+            "about:blank",
+        ]
         # Its own session: close() kills Chrome's process GROUP, and without
         # one that group is ours -- the census, tee and run-full.sh died with
         # the first recycled browser (macOS, ~1,500 tests in at -j 8).
         self.proc = subprocess.Popen(
-            args, stdout=open(proc.tmpdir(f"netcensus_chrome_{slot}.log"), "w"),
-            stderr=subprocess.STDOUT, **proc.child_kwargs(new_group=True))
+            args,
+            stdout=open(proc.tmpdir(f"netcensus_chrome_{slot}.log"), "w"),
+            stderr=subprocess.STDOUT,
+            **proc.child_kwargs(new_group=True),
+        )
         proc.bind_to_parent(self.proc)
         self.cdp = CDP(self._devtools_url())
+        self.extension_path = extension_path
+        print(extension_path)
+        if extension_path:
+            self.extension_settings = ExtensionSettings(
+                ext=extension_path.split("/")[-2], ext_dir=extension_path
+            )  # TODO this -2 is a magic number right now I should do this nicer
+            self.extension_settings.update_manifest(add_cust_rule=self.add_cust_rule)
+            if self.add_cust_rule:
+                self.extension_settings.add_test_rule()
+            print("Loaded Extension: ", self.extension_settings.ext)
+            self.cdp.send("Extensions.loadUnpacked", {"path": extension_path})
         # SHARED WORKERS belong to the browser, not to the page that started
         # them, so the page-level auto-attach below never reaches them: their
         # fetches still show up in the access log (Referer = the worker
@@ -226,10 +271,15 @@ class Browser:
         # filtered to shared workers and paused on start like every other
         # target, closes that.  Each browser runs one test at a time, so a
         # shared worker that appears during a visit belongs to that test.
-        self.cdp.try_send("Target.setAutoAttach",
-                          {"autoAttach": True, "waitForDebuggerOnStart": True,
-                           "flatten": True,
-                           "filter": [{"type": "shared_worker"}]})
+        self.cdp.try_send(
+            "Target.setAutoAttach",
+            {
+                "autoAttach": True,
+                "waitForDebuggerOnStart": True,
+                "flatten": True,
+                "filter": [{"type": "shared_worker"}],
+            },
+        )
 
     def _devtools_url(self, wait: float = 30) -> str:
         deadline = time.time() + wait
@@ -244,8 +294,11 @@ class Browser:
             # Windows it is [::1].
             for host in ("127.0.0.1", "[::1]"):
                 try:
-                    v = json.load(urllib.request.urlopen(
-                        f"http://{host}:{port}/json/version", timeout=2))
+                    v = json.load(
+                        urllib.request.urlopen(
+                            f"http://{host}:{port}/json/version", timeout=2
+                        )
+                    )
                     return v["webSocketDebuggerUrl"]
                 except (urllib.error.URLError, OSError, KeyError, ValueError):
                     continue
@@ -256,15 +309,14 @@ class Browser:
         self.cdp.close()
         proc.kill_tree(self.proc)
 
-    def __enter__(self) -> "Browser":
+    def __enter__(self) -> "Chrome":
         return self
 
     def __exit__(self, *exc) -> None:
         self.close()
 
     # -- one test -------------------------------------------------------------
-    def _init_session(self, sess: str, kind: str = "page",
-                      wait: bool = True) -> None:
+    def _init_session(self, sess: str, kind: str = "page", wait: bool = True) -> None:
         """Instrument one target: network census on, auto-attach cascaded.
 
         Each target type gets only the domains it HAS -- a worker has no Page
@@ -279,25 +331,38 @@ class Browser:
         send("Network.enable", session=sess)
         if is_doc:
             send("Runtime.enable", session=sess)
-            send("Page.addScriptToEvaluateOnNewDocument",
-                 {"source": _DONE_HOOK}, session=sess)
-            send("Page.addScriptToEvaluateOnNewDocument",
-                 {"source": _RTC_HOOK}, session=sess)
+            send(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": _DONE_HOOK},
+                session=sess,
+            )
+            send(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": _RTC_HOOK},
+                session=sess,
+            )
         # Cascade: every popup, OOPIF and worker the test creates is attached
         # PAUSED, instrumented, then resumed -- so none of its requests can be
         # sent before we are listening.
-        send("Target.setAutoAttach",
-             {"autoAttach": True, "waitForDebuggerOnStart": True,
-              "flatten": True}, session=sess)
+        send(
+            "Target.setAutoAttach",
+            {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True},
+            session=sess,
+        )
 
     def visit(self, url: str, timeout: float, settle: float) -> Visit:
         """Load one test in a fresh tab; return every request it attempted."""
         tid = self.cdp.send("Target.createTarget", {"url": "about:blank"})["targetId"]
-        sess = self.cdp.send("Target.attachToTarget",
-                             {"targetId": tid, "flatten": True})["sessionId"]
+        sess = self.cdp.send(
+            "Target.attachToTarget", {"targetId": tid, "flatten": True}
+        )["sessionId"]
         sessions, reqs = {sess}, {}
-        self._docs = {sess}           # document sessions (page + iframes)
+        self._docs = {sess}  # document sessions (page + iframes)
+        if self.extension_path:
+            print("Loaded Extension: ", self.extension_settings.ext)
+            self.cdp.send("Extensions.loadUnpacked", {"path": self.extension_path})
         v = Visit()
+
         try:
             self._init_session(sess)
             self.cdp.drain()
@@ -308,8 +373,13 @@ class Browser:
                 self._absorb(self.cdp.drain(), sessions, reqs)
                 r = self.cdp.try_send(
                     "Runtime.evaluate",
-                    {"expression": "window.__netcensusDone === true",
-                     "returnByValue": True}, session=sess, timeout=2)
+                    {
+                        "expression": "window.__netcensusDone === true",
+                        "returnByValue": True,
+                    },
+                    session=sess,
+                    timeout=2,
+                )
                 if r and r.get("result", {}).get("value") is True:
                     v.completed = True
                     break
@@ -324,8 +394,13 @@ class Browser:
             for ds in self._docs:
                 r = self.cdp.try_send(
                     "Runtime.evaluate",
-                    {"expression": "JSON.stringify(window.__netcensusRtc || [])",
-                     "returnByValue": True}, session=ds, timeout=2)
+                    {
+                        "expression": "JSON.stringify(window.__netcensusRtc || [])",
+                        "returnByValue": True,
+                    },
+                    session=ds,
+                    timeout=2,
+                )
                 try:
                     v.rtc += json.loads(r["result"]["value"]) if r else []
                 except (KeyError, TypeError, ValueError):
@@ -360,16 +435,22 @@ class Browser:
                 first = reqs.get(rid)
                 key = rid if first is None else f"{rid}#{len(reqs)}"
                 reqs[key] = {
-                    "url": req.get("url", ""), "method": req.get("method", ""),
+                    "url": req.get("url", ""),
+                    "method": req.get("method", ""),
                     "type": p.get("type", ""),
                     "initiator": (first or {}).get("initiator")
-                                 or p.get("initiator", {}).get("type", ""),
-                    "redirect": first is not None}
+                    or p.get("initiator", {}).get("type", ""),
+                    "redirect": first is not None,
+                }
             elif m == "Network.webSocketCreated":
                 reqs["ws:" + p.get("requestId", "")] = {
-                    "url": p.get("url", ""), "method": "GET",
-                    "type": "WebSocket", "initiator": "script",
-                    "redirect": False, "status": None}
+                    "url": p.get("url", ""),
+                    "method": "GET",
+                    "type": "WebSocket",
+                    "initiator": "script",
+                    "redirect": False,
+                    "status": None,
+                }
             elif m == "Network.webSocketHandshakeResponseReceived":
                 # The server's answer to the handshake.  101 can only come
                 # from a server that accepted it, which makes it proof the
@@ -389,9 +470,13 @@ class Browser:
                     ws["sent"] = True
             elif m == "Network.webTransportCreated":
                 reqs["wt:" + p.get("transportId", "")] = {
-                    "url": p.get("url", ""), "method": "CONNECT",
-                    "type": "WebTransport", "initiator": "script",
-                    "redirect": False, "established": False}
+                    "url": p.get("url", ""),
+                    "method": "CONNECT",
+                    "type": "WebTransport",
+                    "initiator": "script",
+                    "redirect": False,
+                    "established": False,
+                }
             elif m == "Network.webTransportConnectionEstablished":
                 # QUIC handshake done AND the server accepted the HTTP/3
                 # extended CONNECT.  The h3 server logs no sessions, so this

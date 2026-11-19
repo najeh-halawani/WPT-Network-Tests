@@ -41,6 +41,7 @@ WebSocket, WebTransport and WebRTC are always runtime: only script opens them.
 `runtime`   = any RUNTIME evidence.  The headline list.
 `protocols` = which protocols carried the runtime evidence.
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -61,23 +62,23 @@ class TestResult:
     url: str
     type: str
     # -- THE ANSWERS -----------------------------------------------------------
-    emitted: bool = False       # any evidence, any tier
-    runtime: bool = False       # any RUNTIME evidence
-    protocols: list = field(default_factory=list)   # subset of PROTOCOLS
+    emitted: bool = False  # any evidence, any tier
+    runtime: bool = False  # any RUNTIME evidence
+    protocols: list = field(default_factory=list)  # subset of PROTOCOLS
     n_logged: int = 0
-    logged: list = field(default_factory=list)      # every own item, labeled
+    logged: list = field(default_factory=list)  # every own item, labeled
     runtime_requests: list = field(default_factory=list)
     static_requests: list = field(default_factory=list)
     statuses: list = field(default_factory=list)
-    n_ws: int = 0               # WebSocket handshakes that reached the server
-    n_wt: int = 0               # WebTransport sessions established
-    n_rtc: int = 0              # WebRTC peers whose ICE connected
+    n_ws: int = 0  # WebSocket handshakes that reached the server
+    n_wt: int = 0  # WebTransport sessions established
+    n_rtc: int = 0  # WebRTC peers whose ICE connected
     # -- context for reading the answers, not part of them ---------------------
-    n_cdp: int = 0              # requests the browser attempted (non-noise)
-    cdp_only: bool = False      # attempted, nothing reached a server
-    completed: bool = False     # testharness reported
-    targets: int = 0            # page + frames + workers attached
-    seconds: float = 0.0        # time until the harness reported
+    n_cdp: int = 0  # requests the browser attempted (non-noise)
+    cdp_only: bool = False  # attempted, nothing reached a server
+    completed: bool = False  # testharness reported
+    targets: int = 0  # page + frames + workers attached
+    seconds: float = 0.0  # time until the harness reported
     error: str | None = None
 
     @property
@@ -111,12 +112,14 @@ def _cdp_key(url: str) -> tuple | None:
         return None
     if u.scheme not in _DEFAULT_PORT:
         return None
-    return (port or _DEFAULT_PORT[u.scheme],
-            (u.path or "/") + (f"?{u.query}" if u.query else ""))
+    return (
+        port or _DEFAULT_PORT[u.scheme],
+        (u.path or "/") + (f"?{u.query}" if u.query else ""),
+    )
 
 
 def _label(r: dict) -> str:
-    return f'{r["method"]} :{r["port"]}{r["path"]}'
+    return f"{r['method']} :{r['port']}{r['path']}"
 
 
 def _rtc_label(entry: dict) -> str:
@@ -124,17 +127,22 @@ def _rtc_label(entry: dict) -> str:
     lo, re_ = p.get("local") or {}, p.get("remote") or {}
     if not lo:
         return f"RTC ice-{entry.get('state', 'connected')}"
-    return (f"RTC {lo.get('protocol', '?')} {lo.get('type', '?')} "
-            f"{lo.get('address')}:{lo.get('port')} -> "
-            f"{re_.get('address')}:{re_.get('port')}")
+    return (
+        f"RTC {lo.get('protocol', '?')} {lo.get('type', '?')} "
+        f"{lo.get('address')}:{lo.get('port')} -> "
+        f"{re_.get('address')}:{re_.get('port')}"
+    )
 
 
 def classify(test: Test, visit: Visit, logged: list) -> TestResult:
     """Combine one test's observations into its row."""
     own_docs = accesslog.self_paths(test.url)
     deps = frozenset(test.deps)
-    own = [r for r in accesslog.dedup(logged)
-           if not accesslog.is_noise(r["path"], own_docs)]
+    own = [
+        r
+        for r in accesslog.dedup(logged)
+        if not accesslog.is_noise(r["path"], own_docs)
+    ]
 
     # -- http: access log, tiered by how the browser initiated it -------------
     initiated: dict = {}
@@ -160,7 +168,8 @@ def classify(test: Test, visit: Visit, logged: list) -> TestResult:
     ws = []
     for c in visit.requests:
         if c.get("type") == "WebSocket" and (
-                c.get("sent") or c.get("status") in (101, 200)):
+            c.get("sent") or c.get("status") in (101, 200)
+        ):
             k = _cdp_key(c["url"])
             if k is not None:
                 ws.append(f"WS :{k[0]}{k[1]}")
@@ -170,8 +179,7 @@ def classify(test: Test, visit: Visit, logged: list) -> TestResult:
         if c.get("type") == "WebTransport" and c.get("established"):
             try:
                 u = urlsplit(c["url"])
-                wt.append(f"WT :{u.port}{u.path}"
-                          + (f"?{u.query}" if u.query else ""))
+                wt.append(f"WT :{u.port}{u.path}" + (f"?{u.query}" if u.query else ""))
             except ValueError:
                 continue
     # -- webrtc ---------------------------------------------------------------
@@ -182,10 +190,12 @@ def classify(test: Test, visit: Visit, logged: list) -> TestResult:
             protocols.add(name)
             runtime += items
 
-    attempted = [c for c in visit.requests
-                 if c["url"].startswith(_NETWORK_SCHEMES)
-                 and not accesslog.is_noise(accesslog.url_path(c["url"]),
-                                            own_docs)]
+    attempted = [
+        c
+        for c in visit.requests
+        if c["url"].startswith(_NETWORK_SCHEMES)
+        and not accesslog.is_noise(accesslog.url_path(c["url"]), own_docs)
+    ]
     attempted += [c for c in visit.requests if c.get("type") == "WebTransport"]
     evidence = bool(own) or bool(ws) or bool(wt) or bool(rtc)
     return TestResult(

@@ -23,6 +23,7 @@ takes hours; a crash after four of them must not cost four hours.  --resume
 skips every URL already in the checkpoint, and the final JSON is always rebuilt
 from the checkpoint, so a resumed run and a clean one produce the same file.
 """
+
 from __future__ import annotations
 
 import collections
@@ -33,11 +34,13 @@ import time
 from dataclasses import dataclass
 
 from . import accesslog, manifest, proc
-from .browser import Browser, Visit
+from .browser import Chrome, Visit
 from .classify import PROTOCOLS, TestResult, classify
 from .config import RunConfig
 from .console import Console
 from .server import WptServe
+from .utils import get_correct_extension_path
+from .firefox import Firefox
 
 # A browser is replaced after this many tests.  Long-lived headless Chromes
 # accumulate service workers, storage and stray targets, and one of those
@@ -85,7 +88,7 @@ class Census:
     def select(self) -> list[manifest.Test]:
         man = manifest.load(self.cfg.wpt)
         tests = manifest.tests(man, self.cfg.types, self.cfg.filter)
-        return tests[:self.cfg.limit] if self.cfg.limit else tests
+        return tests[: self.cfg.limit] if self.cfg.limit else tests
 
     def _already_done(self) -> set:
         if not (self.resume and os.path.exists(self.checkpoint)):
@@ -96,7 +99,7 @@ class Census:
                 try:
                     done.add(json.loads(line)["url"])
                 except (ValueError, KeyError):
-                    continue          # a torn final line from a killed run
+                    continue  # a torn final line from a killed run
         return done
 
     # -- run ------------------------------------------------------------------
@@ -111,18 +114,24 @@ class Census:
                 if os.path.exists(stale):
                     os.remove(stale)
 
-        c.header(f"netcensus: {len(todo)} test(s) to run"
-                 + (f", {len(done)} already decided" if done else "")
-                 + f"  ·  {self.cfg.jobs} worker(s)")
+        c.header(
+            f"netcensus: {len(todo)} test(s) to run"
+            + (f", {len(done)} already decided" if done else "")
+            + f"  ·  {self.cfg.jobs} worker(s)"
+        )
         c.info(f"wpt     {self.cfg.wpt}")
-        c.info(f"chrome  {self.cfg.chrome}")
+        c.info(f"browser  {self.cfg.browser}")
+        c.info(f"extension  {' '.join(word for word in self.cfg.extension.split('_')) if self.cfg.extension else "✖"}")
+        c.info(f"custom rule  {'✔' if self.cfg.add_cust_rule else '✖'}")
 
         log_path = proc.tmpdir("netcensus_wptserve_access.log")
         c.info(f"starting wpt serve --verbose  (access log: {log_path})")
-        session = {"started": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                   "rows": 0, "ws_attributed": 0}
-        with WptServe(self.cfg.wpt, log_path,
-                      self.cfg.require_all_servers) as serve:
+        session = {
+            "started": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "rows": 0,
+            "ws_attributed": 0,
+        }
+        with WptServe(self.cfg.wpt, log_path, self.cfg.require_all_servers) as serve:
             c.servers(serve.servers)
             session["servers"] = serve.servers
             router = accesslog.LogRouter(log_path)
@@ -133,9 +142,11 @@ class Census:
             finally:
                 router.orphans(flush_pending=True)
                 router.stop()
-                session.update(ended=time.strftime("%Y-%m-%dT%H:%M:%S"),
-                               orphans=router.orphan_total,
-                               ws_server=router.ws_handshakes)
+                session.update(
+                    ended=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    orphans=router.orphan_total,
+                    ws_server=router.ws_handshakes,
+                )
                 self._log_session(session)
         summary = self.finalize()
         c.summary(summary)
@@ -152,8 +163,9 @@ class Census:
             groups.setdefault(accesslog.OwnDocs(t.url).group, []).append(t)
         return list(groups.values())
 
-    def _serial_recheck(self, negatives: list, router: accesslog.LogRouter,
-                        session: dict) -> None:
+    def _serial_recheck(
+        self, negatives: list, router: accesslog.LogRouter, session: dict
+    ) -> None:
         """Re-run, ONE AT A TIME, the tests under `serial_recheck` prefixes
         that came back without runtime evidence.
 
@@ -163,18 +175,29 @@ class Census:
         at -j 8, and all 3 emitted when re-run serially.  The serial row is
         appended after the parallel one, and the last row for a URL wins.
         """
-        prefixes = tuple(p.strip().strip("/")
-                         for p in self.cfg.serial_recheck.split(",") if p.strip())
-        again = [t for t in negatives
-                 if prefixes and t.url.lstrip("/").startswith(prefixes)]
+        prefixes = tuple(
+            p.strip().strip("/")
+            for p in self.cfg.serial_recheck.split(",")
+            if p.strip()
+        )
+        again = [
+            t for t in negatives if prefixes and t.url.lstrip("/").startswith(prefixes)
+        ]
         if not again:
             return
-        self.console.header(f"serial re-check: {len(again)} test(s) under "
-                            f"{', '.join(prefixes)} without runtime evidence, -j 1")
+        self.console.header(
+            f"serial re-check: {len(again)} test(s) under "
+            f"{', '.join(prefixes)} without runtime evidence, -j 1"
+        )
         self._drive(again, router, session, jobs=1)
 
-    def _drive(self, todo: list, router: accesslog.LogRouter,
-               session: dict, jobs: int | None = None) -> list:
+    def _drive(
+        self,
+        todo: list,
+        router: accesslog.LogRouter,
+        session: dict,
+        jobs: int | None = None,
+    ) -> list:
         """Run `todo`; return the tests that came back WITHOUT runtime
         evidence (the candidates for a serial re-check)."""
         work = collections.deque(self._groups(todo))
@@ -213,21 +236,52 @@ class Census:
             try:
                 while (group := next_group()) is not None:
                     for test in group:
-                        if browser is None or used >= RECYCLE_EVERY \
-                                or not browser.cdp.alive:
+                        if (
+                            browser is None
+                            or used >= RECYCLE_EVERY
+                            or not browser.cdp.alive
+                        ):
                             if browser:
                                 browser.close()
-                            browser, used = Browser(self.cfg.chrome, slot, self.cfg.wpt), 0
+                            with lock:
+                                if self.cfg.browser.lower().endswith("firefox"):
+                                    browser, used = (
+                                        Firefox(
+                                            self.cfg.browser,
+                                            slot,
+                                            self.cfg.wpt,
+                                            extension_path=get_correct_extension_path(
+                                                "firefox", self.cfg.extension
+                                            ),
+                                            add_cust_rule=self.cfg.add_cust_rule,
+                                        ),
+                                        0,
+                                    )
+                                else:
+                                    browser, used = (
+                                        Chrome(
+                                            self.cfg.browser,
+                                            slot,
+                                            self.cfg.wpt,
+                                            extension_path=get_correct_extension_path(
+                                                "chrome", self.cfg.extension
+                                            ),
+                                            add_cust_rule=self.cfg.add_cust_rule,
+                                        ),
+                                        0,
+                                    )
                         used += 1
                         record(self._one(browser, test, router))
-            except Exception as exc:                       # pragma: no cover
+            except Exception as exc:  # pragma: no cover
                 self.console.error(f"worker {slot} died: {exc}")
             finally:
                 if browser:
                     browser.close()
 
-        threads = [threading.Thread(target=worker, args=(i,), daemon=True)
-                   for i in range(max(1, jobs or self.cfg.jobs))]
+        threads = [
+            threading.Thread(target=worker, args=(i,), daemon=True)
+            for i in range(max(1, jobs or self.cfg.jobs))
+        ]
         try:
             for t in threads:
                 t.start()
@@ -235,19 +289,22 @@ class Census:
                 for t in threads:
                     t.join(timeout=0.5)
         except KeyboardInterrupt:
-            self.console.warn("interrupted -- finished rows are kept; "
-                              "re-run with --resume to continue")
+            self.console.warn(
+                "interrupted -- finished rows are kept; "
+                "re-run with --resume to continue"
+            )
             with lock:
                 work.clear()
             for t in threads:
                 t.join(timeout=self.cfg.timeout + self.cfg.settle + 5)
-            negatives = []            # an interrupted run is not re-checked
+            negatives = []  # an interrupted run is not re-checked
         finally:
             sink.close()
         return negatives
 
-    def _one(self, browser: Browser, test: manifest.Test,
-             router: accesslog.LogRouter) -> TestResult:
+    def _one(
+        self, browser: Chrome, test: manifest.Test, router: accesslog.LogRouter
+    ) -> TestResult:
         key = router.open_test(test.url)
         try:
             visit = browser.visit(test.full_url, self.cfg.timeout, self.cfg.settle)
@@ -277,7 +334,8 @@ class Census:
         summary = {
             "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "wpt": self.cfg.wpt,
-            "chrome": self.cfg.chrome,
+            "browser": self.cfg.browser,
+            "extension": self.cfg.extension,
             "filter": self.cfg.filter,
             "types": list(self.cfg.types),
             "jobs": self.cfg.jobs,
@@ -287,8 +345,11 @@ class Census:
             "n_emitted": len(runtime) + len(static_only),
             "n_runtime": len(runtime),
             "n_static_only": len(static_only),
-            "n_none": sum(1 for r in rows if not r["emitted"]
-                          and not r.get("cdp_only") and not r.get("error")),
+            "n_none": sum(
+                1
+                for r in rows
+                if not r["emitted"] and not r.get("cdp_only") and not r.get("error")
+            ),
             "n_cdp_only": sum(1 for r in rows if r.get("cdp_only")),
             "n_incomplete": sum(1 for r in rows if not r.get("completed")),
             "n_errors": sum(1 for r in rows if r.get("error")),
@@ -296,8 +357,9 @@ class Census:
             "sessions": len(sessions),
             # Rows decided by a session that was killed before it could log
             # its totals.  Non-zero means the counts below are a lower bound.
-            "rows_without_session": max(0, decided - sum(s.get("rows", 0)
-                                                         for s in sessions)),
+            "rows_without_session": max(
+                0, decided - sum(s.get("rows", 0) for s in sessions)
+            ),
             "orphan_requests": sum(s.get("orphans", 0) for s in sessions),
             # Cross-check of the WebSocket evidence: handshakes the ws/wss
             # SERVER logged vs accepted handshakes credited to tests.  Equal
@@ -308,14 +370,20 @@ class Census:
             # protocol servers that were DOWN in any session (only possible
             # with --allow-missing-servers).  Tests on those protocols are
             # unmeasured, not negative.
-            "servers_down": sorted({k for s in sessions
-                                    for k, ok in s.get("servers", {}).items()
-                                    if not ok}),
+            "servers_down": sorted(
+                {
+                    k
+                    for s in sessions
+                    for k, ok in s.get("servers", {}).items()
+                    if not ok
+                }
+            ),
             # tests with runtime evidence on each protocol (a test can be in
             # several: a WebRTC test that also fetches is http + webrtc)
-            "n_by_protocol": {p: sum(1 for r in runtime
-                                     if p in r.get("protocols", []))
-                              for p in PROTOCOLS},
+            "n_by_protocol": {
+                p: sum(1 for r in runtime if p in r.get("protocols", []))
+                for p in PROTOCOLS
+            },
             "rows": rows,
         }
         with open(self.out, "w", encoding="utf-8", newline="\n") as fh:
@@ -325,9 +393,10 @@ class Census:
         # <out>-static.txt      tests whose only traffic is markup / META deps
         # <out>-<protocol>.txt  the runtime list, split by protocol
         lists = [(stem + ".txt", runtime), (stem + "-static.txt", static_only)]
-        lists += [(f"{stem}-{p}.txt",
-                   [r for r in runtime if p in r.get("protocols", [])])
-                  for p in PROTOCOLS]
+        lists += [
+            (f"{stem}-{p}.txt", [r for r in runtime if p in r.get("protocols", [])])
+            for p in PROTOCOLS
+        ]
         for path, sel in lists:
             with open(path, "w", encoding="utf-8", newline="\n") as fh:
                 fh.writelines(r["url"] + "\n" for r in sel)

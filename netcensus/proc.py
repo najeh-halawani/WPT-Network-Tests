@@ -22,6 +22,7 @@ On Windows a process group is not the unit of cleanup; the job is done with
 `taskkill /T /F`, which walks the child tree the way killpg walks the group.
 Ports are read from `netstat -ano`, because Windows has no lsof.
 """
+
 from __future__ import annotations
 
 import os
@@ -45,8 +46,12 @@ def kill_tree(proc) -> None:
         return
     try:
         if WINDOWS:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True, check=False, timeout=20)
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                check=False,
+                timeout=20,
+            )
         else:
             pgid = os.getpgid(proc.pid)
             if pgid == os.getpgrp():
@@ -102,28 +107,40 @@ def _windows_job():
     from ctypes import wintypes
 
     class IO_COUNTERS(ctypes.Structure):
-        _fields_ = [(n, ctypes.c_ulonglong) for n in (
-            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+        _fields_ = [
+            (n, ctypes.c_ulonglong)
+            for n in (
+                "ReadOperationCount",
+                "WriteOperationCount",
+                "OtherOperationCount",
+                "ReadTransferCount",
+                "WriteTransferCount",
+                "OtherTransferCount",
+            )
+        ]
 
     class BASIC_LIMIT(ctypes.Structure):
-        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
-                    ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", wintypes.DWORD),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", wintypes.DWORD),
-                    ("SchedulingClass", wintypes.DWORD)]
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
 
     class EXTENDED_LIMIT(ctypes.Structure):
-        _fields_ = [("BasicLimitInformation", BASIC_LIMIT),
-                    ("IoInfo", IO_COUNTERS),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+        _fields_ = [
+            ("BasicLimitInformation", BASIC_LIMIT),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
 
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -132,9 +149,13 @@ def _windows_job():
         _JOB = False
         return _JOB
     info = EXTENDED_LIMIT()
-    info.BasicLimitInformation.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
-    k32.SetInformationJobObject(job, 9,              # ExtendedLimitInformation
-                                ctypes.byref(info), ctypes.sizeof(info))
+    info.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+    k32.SetInformationJobObject(
+        job,
+        9,  # ExtendedLimitInformation
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    )
     _JOB = (k32, job)
     return _JOB
 
@@ -143,12 +164,13 @@ def bind_to_parent(popen) -> None:
     """Make `popen` (and everything it spawns) die with this process. Never
     raises: failing to bind costs only the guarantee, not the run."""
     if not WINDOWS:
-        return                    # Linux: done at spawn via preexec_fn
+        return  # Linux: done at spawn via preexec_fn
     try:
         job = _windows_job()
         if not job:
             return
         import ctypes
+
         k32, handle = job
         k32.OpenProcess.restype = ctypes.c_void_p
         ph = k32.OpenProcess(0x0001 | 0x0100, False, popen.pid)  # TERMINATE|SET_QUOTA
@@ -159,9 +181,10 @@ def bind_to_parent(popen) -> None:
         pass
 
 
-def _linux_pdeathsig() -> None:          # runs in the child, before exec
+def _linux_pdeathsig() -> None:  # runs in the child, before exec
     try:
         import ctypes
+
         ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL)
     except Exception:
         pass
@@ -179,9 +202,13 @@ def pids_on_port(port: int) -> list[int]:
     """PIDs LISTENing on `port`. Empty when nothing is, or nothing can tell us."""
     if WINDOWS:
         try:
-            out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
-                                 capture_output=True, text=True,
-                                 check=False, timeout=25).stdout
+            out = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=25,
+            ).stdout
         except Exception:
             return []
         pids = set()
@@ -189,17 +216,20 @@ def pids_on_port(port: int) -> list[int]:
         for line in out.splitlines():
             f = line.split()
             # proto  local  foreign  state  pid
-            if len(f) >= 5 and f[3].upper() == "LISTENING" \
-                    and f[1].endswith(needle):
+            if len(f) >= 5 and f[3].upper() == "LISTENING" and f[1].endswith(needle):
                 try:
                     pids.add(int(f[4]))
                 except ValueError:
                     pass
         return sorted(pids)
     try:
-        out = subprocess.run(["lsof", "-ti", "tcp:%d" % port, "-sTCP:LISTEN"],
-                             capture_output=True, text=True,
-                             check=False, timeout=25).stdout
+        out = subprocess.run(
+            ["lsof", "-ti", "tcp:%d" % port, "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=25,
+        ).stdout
     except (FileNotFoundError, Exception):
         return []
     pids = []
@@ -220,16 +250,23 @@ def free_port(port: int) -> None:
     """
     if WINDOWS:
         for pid in pids_on_port(port):
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                           capture_output=True, check=False)
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                check=False,
+            )
         return
     # fuser first (Linux psmisc). macOS ships BSD fuser, which takes FILES and
     # rejects -k/-n -- and under capture_output that failure is invisible, so
     # the harness printed "cleaning up", reaped nothing, and then refused to
     # start. Hence the explicit fallback rather than trusting the return code.
     try:
-        r = subprocess.run(["fuser", "-k", "-n", "tcp", str(port)],
-                           capture_output=True, check=False, timeout=25)
+        r = subprocess.run(
+            ["fuser", "-k", "-n", "tcp", str(port)],
+            capture_output=True,
+            check=False,
+            timeout=25,
+        )
         if r.returncode == 0 and b"Unknown option" not in (r.stderr or b""):
             return
     except Exception:
@@ -257,14 +294,20 @@ def _self_and_ancestors() -> set:
         except Exception:
             pass
         return out
-    ps = ("$m = @{}; Get-CimInstance Win32_Process | "
-          "ForEach-Object { $m[[int]$_.ProcessId] = [int]$_.ParentProcessId }; "
-          "$p = %d; while ($p -and $m.ContainsKey($p)) "
-          "{ Write-Output $p; $p = $m[$p] }" % os.getpid())
+    ps = (
+        "$m = @{}; Get-CimInstance Win32_Process | "
+        "ForEach-Object { $m[[int]$_.ProcessId] = [int]$_.ParentProcessId }; "
+        "$p = %d; while ($p -and $m.ContainsKey($p)) "
+        "{ Write-Output $p; $p = $m[$p] }" % os.getpid()
+    )
     try:
-        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
-                            "-Command", ps],
-                           capture_output=True, text=True, check=False, timeout=40)
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=40,
+        )
         for tok in r.stdout.split():
             if tok.strip().isdigit():
                 out.add(int(tok))
@@ -296,15 +339,19 @@ def kill_matching(pattern: str) -> None:
     skip = _self_and_ancestors()
     if WINDOWS:
         # WMI is the only place the full command line lives.
-        ps = ("Get-CimInstance Win32_Process | "
-              "Where-Object { $_.CommandLine -like '*%s*' } | "
-              "ForEach-Object { Write-Output $_.ProcessId }"
-              % pattern.replace("'", "''"))
+        ps = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.CommandLine -like '*%s*' } | "
+            "ForEach-Object { Write-Output $_.ProcessId }" % pattern.replace("'", "''")
+        )
         try:
-            r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
-                                "-Command", ps],
-                               capture_output=True, text=True, check=False,
-                               timeout=40)
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=40,
+            )
         except Exception:
             return
         for tok in r.stdout.split():
@@ -313,18 +360,30 @@ def kill_matching(pattern: str) -> None:
             pid = int(tok)
             if pid in skip:
                 continue
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                           capture_output=True, check=False)
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                check=False,
+            )
         return
     try:
-        out = subprocess.run(["pgrep", "-f", pattern], capture_output=True,
-                             text=True, check=False, timeout=25).stdout
+        out = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=25,
+        ).stdout
     except Exception:
         # No pgrep: fall back to pkill, which cannot exclude and so is a last
         # resort rather than the default.
         try:
-            subprocess.run(["pkill", "-9", "-f", pattern],
-                           capture_output=True, check=False, timeout=25)
+            subprocess.run(
+                ["pkill", "-9", "-f", pattern],
+                capture_output=True,
+                check=False,
+                timeout=25,
+            )
         except Exception:
             pass
         return
@@ -353,6 +412,7 @@ def tmpdir(*parts) -> str:
     both hosts get somewhere writable without either being special-cased.
     """
     import tempfile
+
     return os.path.join(tempfile.gettempdir(), *parts)
 
 
