@@ -41,6 +41,8 @@ PREFS = {
     # I need this for the setting above
     "extensions.installation_mode.updates_disabled": True,
     # This is to prevent updates
+    "extensions.dnr.feedback": True,
+
 }
 _EXT_SETTLE = 1.0
 
@@ -316,7 +318,6 @@ class Firefox:
         w.drain()
         top = w.send("browsingContext.create", {"type": "tab"})["context"]
         ctxs, tops, reqs, last = {top}, {top}, {}, {}
-  
         v = Visit()
         try:
             t0 = time.time()
